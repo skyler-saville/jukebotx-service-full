@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "jukebotx"
+version = "0.1.0"
+description = "Service-full Discord listening experience for Suno Music community VC parties"
+authors = ["Skyler Saville <skylersaville@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.126.0"
+pydantic = "^2.12.5"
+pydantic-settings = "^2.12.0"
+sqlalchemy = "^2.0.45"
+alembic = "^1.17.2"
+asyncpg = "^0.31.0"
+discord-py = "^2.6.4"
+httpx = "^0.28.1"
+uvicorn = {extras = ["standard"], version = "^0.38.0"}
+
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.14.10"
+mypy = "^1.19.1"
+pytest = "^9.0.2"
+pytest-asyncio = "^1.3.0"
+black = "^25.12.0"
+isort = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

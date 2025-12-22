@@ -1,0 +1,135 @@
+# ============================================================
+# Secrets / Environment
+# ============================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+**/secrets/
+*.crt
+*.pfx
+*.p12
+
+# ============================================================
+# Python bytecode / caches
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.cache/
+
+# ============================================================
+# Virtual environments
+# ============================================================
+.venv/
+venv/
+ENV/
+env/
+.conda/
+.python-version
+
+# ============================================================
+# Build artifacts / packaging
+# ============================================================
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+# ============================================================
+# Logs
+# ============================================================
+*.log
+logs/
+**/logs/
+
+# ============================================================
+# Test / coverage
+# ============================================================
+.coverage
+coverage.xml
+htmlcov/
+.junit.xml
+.pytest_cache/
+
+# ============================================================
+# Poetry
+# ============================================================
+# Keep poetry.lock committed for apps. If you ever decide not to, ignore it here.
+# poetry.lock
+
+# ============================================================
+# Docker / Compose
+# ============================================================
+# Local overrides (do not commit)
+docker-compose.override.yml
+compose.override.yml
+
+# Docker build outputs
+**/*.tar
+**/*.img
+
+# Volumes / local data directories (if you bind-mount anything later)
+data/
+db_data/
+pgdata/
+postgres-data/
+**/postgres-data/
+**/pgdata/
+
+# ============================================================
+# OS / Editor junk
+# ============================================================
+.DS_Store
+Thumbs.db
+
+# Linux / ParrotOS temp files
+*~
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# JetBrains
+.idea/
+*.iml
+
+# ============================================================
+# Jupyter / notebooks (if you ever use them)
+# ============================================================
+.ipynb_checkpoints/
+
+# ============================================================
+# Node (if you add a frontend later)
+# ============================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+.build/
+.next/
+out/
+
+# ============================================================
+# Local tooling / scripts outputs
+# ============================================================
+tmp/
+scratch/
