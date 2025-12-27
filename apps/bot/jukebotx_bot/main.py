@@ -3,7 +3,14 @@ import discord
 from discord.ext import commands
 
 from jukebotx_bot.discord.session import SessionManager, Track
+from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
+from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
+from jukebotx_infra.db import async_session_factory, init_db
+from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
+from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
+from jukebotx_infra.repos.track_repo import PostgresTrackRepository
+from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 
 
 def _is_mod(member: discord.Member) -> bool:
@@ -19,6 +26,16 @@ def main() -> None:
 
     bot = commands.Bot(command_prefix=";", intents=intents)
     session_manager = SessionManager()
+    ingest_use_case = IngestSunoLink(
+        suno_client=HttpxSunoClient(),
+        track_repo=PostgresTrackRepository(async_session_factory),
+        submission_repo=PostgresSubmissionRepository(async_session_factory),
+        queue_repo=PostgresQueueRepository(async_session_factory),
+    )
+
+    @bot.setup_hook
+    async def setup_hook() -> None:
+        await init_db()
 
     @bot.event
     async def on_ready() -> None:
@@ -55,6 +72,51 @@ def main() -> None:
         )
 
         print(f"Connected as {bot.user} (env={settings.env})")
+
+    @bot.event
+    async def on_message(message: discord.Message) -> None:
+        if message.author.bot:
+            return
+
+        if message.guild is None:
+            await bot.process_commands(message)
+            return
+
+        if message.guild.voice_client is None:
+            await bot.process_commands(message)
+            return
+
+        urls = extract_suno_urls(message.content)
+        if not urls:
+            await bot.process_commands(message)
+            return
+
+        added_any = False
+        for url in urls:
+            try:
+                result = await ingest_use_case.execute(
+                    IngestSunoLinkInput(
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        message_id=message.id,
+                        author_id=message.author.id,
+                        suno_url=url,
+                    )
+                )
+            except SunoScrapeError as exc:
+                print(f"Failed to ingest Suno URL {url}: {exc}")
+                continue
+
+            if not result.is_duplicate_in_guild:
+                added_any = True
+
+        if added_any:
+            try:
+                await message.add_reaction("🤘")
+            except discord.HTTPException:
+                pass
+
+        await bot.process_commands(message)
 
     def get_session(ctx: commands.Context) -> SessionManager:
         return session_manager
