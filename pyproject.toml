@@ -16,6 +16,7 @@ asyncpg = "^0.31.0"
 discord-py = "^2.6.4"
 httpx = "^0.28.1"
 uvicorn = {extras = ["standard"], version = "^0.38.0"}
+pynacl = "^1.6.1"
 
 
 [tool.poetry.group.dev.dependencies]
