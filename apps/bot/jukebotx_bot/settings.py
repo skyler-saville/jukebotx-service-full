@@ -22,6 +22,11 @@ class BotSettings(BaseSettings):
     discord_token: str | None = Field(default=None, alias="DISCORD_TOKEN")
     dev_discord_token: str | None = Field(default=None, alias="DEV_DISCORD_TOKEN")
 
+    jam_session_channel_id: int | None = Field(
+        default=None, alias="JAM_SESSION_CHANNEL_ID"
+    )
+    jam_session_role_id: int | None = Field(default=None, alias="JAM_SESSION_ROLE_ID")
+
     # Pydantic v2 configuration
     model_config = SettingsConfigDict(
         env_file=".env",
