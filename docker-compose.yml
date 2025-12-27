@@ -11,6 +11,8 @@ services:
       - "5432:5432"
 
   api:
+    environment:
+      PYTHONPATH: /app/apps/api:/app/packages/core:/app/packages/infra
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -18,9 +20,11 @@ services:
     depends_on:
       - db
     ports:
-      - "8000:8000"
+      - "8001:8000"
 
   bot:
+    environment:
+      PYTHONPATH: /app/apps/bot:/app/packages/core:/app/packages/infra
     build:
       context: .
       dockerfile: apps/bot/Dockerfile
