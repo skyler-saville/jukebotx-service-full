@@ -48,6 +48,22 @@ def main() -> None:
 
         print(f"Connected as {client.user} (env={settings.env})")
 
+    @client.event
+    async def on_message(message: discord.Message) -> None:
+        """
+        Lightweight proof-of-life command handler.
+
+        Responds to "!ping" with "Pong!" and the current websocket latency.
+        """
+        if message.author == client.user:
+            return
+
+        if message.content.strip().lower() != "!ping":
+            return
+
+        latency_ms = int(client.latency * 1000)
+        await message.channel.send(f"Pong! ({latency_ms}ms)")
+
     client.run(settings.active_discord_token)
 
 
