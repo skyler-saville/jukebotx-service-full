@@ -57,8 +57,9 @@ This repo is set up so you can:
 * **Infrastructure adapters** (`packages/infra`)
 
   * HTTP clients and repo implementations that satisfy core ports
+  * Async SQLAlchemy repositories + Postgres models
   * Suno scraping via **httpx** (no browser automation)
-  * No SQLite (intentionally)
+  * Postgres is the default persistence target
 
 * **Scripts** (`scripts`)
 
@@ -93,6 +94,7 @@ This project follows a **clean architecture / DDD-ish** approach:
 * **discord.py** for the bot (in `apps/bot`)
 * **FastAPI** for the API (in `apps/api`)
 * **httpx** for Suno fetching/scraping (in `packages/infra`)
+* **Postgres + SQLAlchemy (async)** for persistence (in `packages/infra`)
 * **Makefile** for consistent commands
 * **Docker Compose** for local container wiring (optional)
 
@@ -170,6 +172,8 @@ These names may evolve, but the usual suspects are:
 * `DISCORD_TOKEN` — Discord bot token
 * `DISCORD_GUILD_ID` — optional, for dev/testing slash command sync
 * `LOG_LEVEL` — e.g. `INFO`
+* `DATABASE_URL` — async SQLAlchemy DSN (defaults to local Postgres)
+* `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — used by Docker Compose
 
 > Do not commit `.env`. The repo should ignore it.
 
@@ -294,11 +298,13 @@ find . -type f -name "*.pyc" -delete
 Your repo already uses Make (good). Typical targets to include:
 
 * `make install` — `poetry install`
-* `make fmt` / `make lint` — formatting and linting
-* `make test` — unit tests
+* `make fmt` — `ruff format .`
+* `make lint` — `ruff check .` + `mypy .`
+* `make test` — `pytest -q`
 * `make bot` — run bot
 * `make api` — run API
 * `make smoke-suno URL=...` — run Suno client smoke test
+* `make up` / `make down` / `make logs` — Docker Compose lifecycle helpers
 
 If a target doesn’t exist yet, add it—Make is your “team interface” even if the team is just you.
 
@@ -316,8 +322,9 @@ You’ll likely run either:
 
 * `bot` service
 * `api` service
+* `db` service (Postgres)
 
-> Until you introduce a real persistence layer, Docker is mostly for parity and deployment rehearsal.
+By default, the app expects Postgres via `DATABASE_URL` (see `.env.example`).
 
 ---
 
@@ -387,6 +394,5 @@ If you want outside contributions later:
 ## License
 
 TBD.
-
 
 
