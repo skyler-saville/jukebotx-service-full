@@ -199,8 +199,10 @@ class JukeBot(commands.Bot):
 
                 track = Track(
                     audio_url=result.mp3_url,
-                    page_url=url,
+                    page_url=result.suno_url,
                     title=result.track_title or url,
+                    artist_display=result.artist_display,
+                    media_url=result.media_url,
                     requester_id=message.author.id,
                     requester_name=getattr(message.author, "display_name", "unknown"),
                 )
@@ -366,8 +368,11 @@ class JukeBot(commands.Bot):
                 track_title = display_url
                 audio_url = item.mp3_url
                 page_url = item.suno_track_url
+                artist_display = None
+                media_url = None
 
-                if item.suno_track_url is not None:
+                ingest_url = item.suno_track_url or item.mp3_url
+                if ingest_url is not None:
                     try:
                         ingest_result = await self.deps.ingest_use_case.execute(
                             IngestSunoLinkInput(
@@ -375,21 +380,26 @@ class JukeBot(commands.Bot):
                                 channel_id=ctx.channel.id,
                                 message_id=ctx.message.id,
                                 author_id=ctx.author.id,
-                                suno_url=item.suno_track_url,
+                                suno_url=ingest_url,
                             )
                         )
                     except SunoScrapeError as exc:
-                        logging.warning("Failed to ingest Suno URL %s: %s", item.suno_track_url, exc)
+                        logging.warning("Failed to ingest Suno URL %s: %s", ingest_url, exc)
                     else:
                         if ingest_result.track_title:
                             track_title = ingest_result.track_title
                         if ingest_result.mp3_url:
                             audio_url = ingest_result.mp3_url
+                        page_url = ingest_result.suno_url
+                        artist_display = ingest_result.artist_display
+                        media_url = ingest_result.media_url
 
                 track = Track(
                     audio_url=audio_url,
                     page_url=page_url,
                     title=track_title,
+                    artist_display=artist_display,
+                    media_url=media_url,
                     requester_id=ctx.author.id,
                     requester_name=ctx.author.display_name,
                 )

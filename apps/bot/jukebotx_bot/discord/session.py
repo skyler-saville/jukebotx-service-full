@@ -10,6 +10,8 @@ class Track:
     audio_url: str
     page_url: str | None
     title: str
+    artist_display: str | None
+    media_url: str | None
     requester_id: int
     requester_name: str
 

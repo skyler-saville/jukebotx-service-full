@@ -27,6 +27,7 @@ class IngestSunoLinkInput:
 @dataclass(frozen=True)
 class IngestSunoLinkResult:
     is_duplicate_in_guild: bool
+    suno_url: str
     track_title: str | None
     artist_display: str | None
     mp3_url: str | None
@@ -111,6 +112,7 @@ class IngestSunoLink:
 
         return IngestSunoLinkResult(
             is_duplicate_in_guild=is_dup,
+            suno_url=track.suno_url,
             track_title=track.title,
             artist_display=track.artist_display,
             mp3_url=track.mp3_url,
