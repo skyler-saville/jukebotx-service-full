@@ -13,6 +13,7 @@ sys.path.extend(
 )
 
 from jukebotx_bot.discord.suno import extract_suno_urls
+from jukebotx_bot.main import select_playback_url
 from jukebotx_core.ports.suno_client import SunoTrackData
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
 from jukebotx_infra.repos.memory import (
@@ -42,6 +43,26 @@ def test_extract_suno_urls() -> None:
         "https://suno.com/song/abc123",
         "https://app.suno.ai/song/def456",
     ]
+
+
+def test_select_playback_url_prefers_mp3() -> None:
+    assert (
+        select_playback_url(
+            suno_url="https://suno.com/song/c3f5745b-2899-4fcf-b482-4dbe5e49931b",
+            mp3_url="https://cdn1.suno.ai/c3f5745b-2899-4fcf-b482-4dbe5e49931b.mp3",
+        )
+        == "https://cdn1.suno.ai/c3f5745b-2899-4fcf-b482-4dbe5e49931b.mp3"
+    )
+
+
+def test_select_playback_url_falls_back_to_suno_url() -> None:
+    assert (
+        select_playback_url(
+            suno_url="https://suno.com/song/c3f5745b-2899-4fcf-b482-4dbe5e49931b",
+            mp3_url=None,
+        )
+        == "https://suno.com/song/c3f5745b-2899-4fcf-b482-4dbe5e49931b"
+    )
 
 
 @pytest.mark.asyncio
