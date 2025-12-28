@@ -1,11 +1,9 @@
-# packages/infra/jukebotx_infra/suno/client.py
 from __future__ import annotations
 
 import html as html_lib
-import json
 import re
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Final
 
 import httpx
 
@@ -13,15 +11,8 @@ import httpx
 @dataclass(frozen=True)
 class SunoTrackData:
     """
-    Normalized metadata scraped from a Suno track page.
-
-    Reality check:
-    - The HTML returned by plain HTTP may NOT contain the hydrated DOM you see in a browser.
-    - Suno can embed lyrics inside Next.js streaming payload fragments:
-        <script>self.__next_f.push([1,"...escaped text..."])</script>
-      These contain \\n escapes (not real newlines), so DOM-based scraping fails.
+    Normalized metadata scraped from a Suno track page (or derived from an MP3 URL).
     """
-
     suno_url: str
     title: str | None
     artist_display: str | None
@@ -40,10 +31,7 @@ class SunoScrapeError(RuntimeError):
     """Raised when Suno metadata cannot be fetched or parsed."""
 
 
-# -----------------------------
-# Regex / parsing primitives
-# -----------------------------
-
+# --- Meta tag extraction (lightweight, fast) ---
 _META_TAG_RE: Final[re.Pattern[str]] = re.compile(
     r"""<meta\s+(?:property|name)\s*=\s*["'](?P<key>[^"']+)["']\s+content\s*=\s*["'](?P<val>[^"']*)["']\s*/?>""",
     re.IGNORECASE,
@@ -54,46 +42,27 @@ _TITLE_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-_NEXT_DATA_RE: Final[re.Pattern[str]] = re.compile(
-    r"""<script[^>]+id=["']__NEXT_DATA__["'][^>]*>(?P<json>.*?)</script>""",
-    re.IGNORECASE | re.DOTALL,
-)
-
-_SCRIPT_JSON_RE: Final[re.Pattern[str]] = re.compile(
-    r"""<script[^>]*type=["']application/json["'][^>]*>(?P<json>.*?)</script>""",
-    re.IGNORECASE | re.DOTALL,
-)
-
-# Next.js streaming pushes:
-#   self.__next_f.push([1,"..."])
+# --- Next.js streaming payload ---
 _NEXT_F_PUSH_STR_RE: Final[re.Pattern[str]] = re.compile(
     r"""self\.__next_f\.push\(\s*\[\s*\d+\s*,\s*"(?P<payload>(?:\\.|[^"\\])*)"\s*\]\s*\)""",
     re.DOTALL,
 )
 
-# Rare fallback: lyrics in server HTML paragraph (typically not present in raw HTML).
-_LYRICS_P_RE: Final[re.Pattern[str]] = re.compile(
-    r"""<p[^>]*class=["'][^"']*\bwhitespace-pre-wrap\b[^"']*\bpr-6\b[^"']*["'][^>]*>(?P<body>.*?)</p>""",
-    re.IGNORECASE | re.DOTALL,
+# --- URL normalization helpers ---
+_SUNO_S_URL_RE: Final[re.Pattern[str]] = re.compile(r"^https?://suno\.com/s/[A-Za-z0-9_-]+/?$", re.IGNORECASE)
+_SUNO_SONG_URL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^https?://suno\.com/song/(?P<uuid>[0-9a-fA-F-]{36})/?$", re.IGNORECASE
 )
-_LYRICS_P_FALLBACK_RE: Final[re.Pattern[str]] = re.compile(
-    r"""<p[^>]*class=["'][^"']*\bwhitespace-pre-wrap\b[^"']*["'][^>]*>(?P<body>.*?)</p>""",
-    re.IGNORECASE | re.DOTALL,
+_MP3_URL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^https?://cdn\d+\.suno\.ai/(?P<uuid>[0-9a-fA-F-]{36})\.mp3$", re.IGNORECASE
 )
-_TAG_STRIP_RE: Final[re.Pattern[str]] = re.compile(r"<[^>]+>", re.DOTALL)
 
-
-# -----------------------------
-# Small utilities
-# -----------------------------
 
 def _strip_html_whitespace(text: str) -> str:
-    """Collapse whitespace into single spaces."""
     return " ".join(text.split()).strip()
 
 
 def _parse_meta_tags(page_html: str) -> dict[str, str]:
-    """Extract meta tag key/value pairs from raw HTML."""
     tags: dict[str, str] = {}
     for m in _META_TAG_RE.finditer(page_html):
         key = m.group("key").strip()
@@ -103,89 +72,51 @@ def _parse_meta_tags(page_html: str) -> dict[str, str]:
     return tags
 
 
-def _parse_title_from_description(description: str | None) -> tuple[str | None, str | None, str | None]:
+def _normalize_track_url(url: str) -> str:
     """
-    Suno description often looks like:
-      "<song title> by <artist display>. Listen and make your own on Suno. (@username)"
+    Normalize Suno URLs into a canonical form. Accepts:
+      - https://suno.com/s/<id>
+      - https://suno.com/song/<uuid>
+      - https://cdn1.suno.ai/<uuid>.mp3  (converted to https://suno.com/song/<uuid>)
     """
-    if not description:
-        return None, None, None
+    u = url.strip()
 
-    desc = description.strip()
-    if " by " not in desc:
-        return None, None, None
+    # Convert MP3 URL -> song URL (best effort)
+    m_mp3 = _MP3_URL_RE.match(u)
+    if m_mp3:
+        track_id = m_mp3.group("uuid").lower()
+        return f"https://suno.com/song/{track_id}"
 
-    left, right = desc.split(" by ", 1)
-    song_title = left.strip() or None
+    # Normalize scheme + trailing slash
+    if u.startswith("http://"):
+        u = "https://" + u[len("http://") :]
+    u = u.rstrip("/")
 
-    artist_username = None
-    at_match = re.search(r"\(@(?P<handle>[^)]+)\)", right)
-    if at_match:
-        artist_username = at_match.group("handle").strip() or None
-        right = re.sub(r"\s*\(@[^)]+\)\s*", "", right).strip()
+    # Keep /s/ or /song/ as-is
+    if _SUNO_S_URL_RE.match(u) or _SUNO_SONG_URL_RE.match(u):
+        return u
 
-    promo = "listen and make your own on suno"
-    if promo in right.lower():
-        right = right.split(".", 1)[0].strip()
+    # If someone passed "suno.com/..." without scheme
+    if u.startswith("suno.com/"):
+        return "https://" + u
 
-    artist_display = right.strip() or None
-    return song_title, artist_display, artist_username
+    return u
 
 
-def _extract_next_data(page_html: str) -> Any | None:
-    """Extract and parse Next.js __NEXT_DATA__ JSON (if present)."""
-    m = _NEXT_DATA_RE.search(page_html)
-    if not m:
-        return None
-
-    raw = m.group("json").strip()
-    if not raw:
-        return None
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+def _decode_stream_fragment(fragment: str) -> str:
+    """
+    Decode a Next.js streamed fragment into normal text.
+    """
+    # Most useful decode steps for your observed payload:
+    # - \\n -> newline
+    # - \\" -> "
+    # - HTML entities
+    text = fragment.replace("\\n", "\n").replace('\\"', '"')
+    return html_lib.unescape(text)
 
 
 def _extract_next_f_payloads(page_html: str) -> list[str]:
-    """
-    Return string payload fragments from:
-      self.__next_f.push([<n>,"<payload>"])
-    """
     return [m.group("payload") for m in _NEXT_F_PUSH_STR_RE.finditer(page_html)]
-
-
-def _extract_application_json_scripts(page_html: str) -> list[Any]:
-    """Extract any <script type="application/json">...</script> blocks."""
-    blobs: list[Any] = []
-    for m in _SCRIPT_JSON_RE.finditer(page_html):
-        raw = m.group("json").strip()
-        if not raw:
-            continue
-        try:
-            blobs.append(json.loads(raw))
-        except json.JSONDecodeError:
-            continue
-    return blobs
-
-
-def _normalize_text_block(text: str) -> str:
-    """
-    Normalize candidate blocks:
-    - unescape HTML entities
-    - convert \\n -> newline
-    - trim trailing whitespace per line
-    """
-    t = html_lib.unescape(text)
-    t = t.replace("\\n", "\n").replace("\\t", "\t")
-
-    lines = [ln.rstrip() for ln in t.splitlines()]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    return "\n".join(lines).strip()
 
 
 def _looks_like_ui_or_boilerplate(text: str) -> bool:
@@ -202,38 +133,13 @@ def _looks_like_ui_or_boilerplate(text: str) -> bool:
         "app store",
         "google play",
         "enable cookies",
-        "javascript",
     )
     return any(m in lowered for m in bad_markers)
 
 
-def _looks_like_next_f_plumbing(text: str) -> bool:
-    """
-    Hard reject obvious RSC/Next.js plumbing fragments that are not lyrics.
-
-    This is necessary because those fragments can contain lots of \\n and moderate
-    line lengths, which can fool scoring heuristics.
-    """
-    lowered = text.lower()
-    bad = (
-        "$sreact.fragment",
-        "metadataboundary",
-        "viewportboundary",
-        "outletboundary",
-        "asyncmetadataoutlet",
-        "static/chunks",
-        "webpack",
-        "__next",
-        "react-dom",
-        "chunk",
-        "manifest",
-    )
-    return any(b in lowered for b in bad)
-
-
 def _score_lyrics_candidate(text: str) -> int:
     """
-    Score a candidate as lyrics without requiring [Verse]/[Chorus] tags.
+    Score a candidate block as lyrics WITHOUT requiring [Verse]/[Chorus] markers.
     """
     t = text.strip()
     if len(t) < 200:
@@ -247,171 +153,109 @@ def _score_lyrics_candidate(text: str) -> int:
 
     score = 0
 
-    score += min(240, len(lines) * 10)
+    # multi-line matters
+    score += min(250, len(lines) * 10)
 
+    # prefer moderate line lengths; penalize giant single-line dumps
     moderate = sum(1 for ln in lines if 10 <= len(ln) <= 120)
-    very_long = sum(1 for ln in lines if len(ln) > 220)
+    very_long = sum(1 for ln in lines if len(ln) > 200)
+    score += min(250, moderate * 12)
+    score -= min(250, very_long * 35)
 
-    score += min(260, moderate * 10)
-    score -= min(260, very_long * 40)
+    # mild boost for structural markers if present, but not required
+    lowered = t.lower()
+    if any(tag in lowered for tag in ("[verse", "[chorus", "[bridge", "[outro", "[intro")):
+        score += 120
 
-    no_period_end = sum(1 for ln in lines if not ln.strip().endswith("."))
-    score += min(140, no_period_end * 6)
-
-    score += min(200, len(t) // 45)
+    # size helps but capped
+    score += min(200, len(t) // 35)
 
     return score
 
 
-def _collect_text_candidates(obj: Any, *, max_depth: int = 35) -> list[str]:
-    """Collect multi-line text candidates from JSON-ish structures."""
-    if max_depth <= 0:
-        return []
-
-    out: list[str] = []
-
-    if isinstance(obj, dict):
-        for v in obj.values():
-            out.extend(_collect_text_candidates(v, max_depth=max_depth - 1))
-    elif isinstance(obj, list):
-        if obj and all(isinstance(x, str) for x in obj):
-            joined = "\n".join(x for x in obj if x.strip())
-            if joined.strip():
-                out.append(joined.strip())
-        else:
-            for item in obj:
-                out.extend(_collect_text_candidates(item, max_depth=max_depth - 1))
-    elif isinstance(obj, str):
-        if "\n" in obj or "\\n" in obj:
-            out.append(obj)
-
-    return out
-
-
-# -----------------------------
-# Lyrics extraction
-# -----------------------------
-
-def _best_scored_text(candidates: list[str], *, threshold: int) -> str | None:
+def _normalize_text_block(text: str) -> str:
     """
-    Score candidates and return the best text above threshold.
+    Normalize escaped newlines + whitespace for scoring/returning.
     """
-    best_text: str | None = None
-    best_score = 0
-
-    for raw in candidates:
-        normalized = _normalize_text_block(raw)
-
-        # Hard reject obvious Next.js plumbing early.
-        if _looks_like_next_f_plumbing(normalized):
-            continue
-
-        sc = _score_lyrics_candidate(normalized)
-        if sc > best_score:
-            best_score = sc
-            best_text = normalized
-
-    if best_text and best_score >= threshold:
-        return best_text
-    return None
+    t = _decode_stream_fragment(text)
+    # Clean trailing whitespace per line, keep line breaks
+    lines = [ln.rstrip() for ln in t.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines).strip()
 
 
-def _extract_lyrics_from_next_f(page_html: str) -> str | None:
+def _extract_lyrics_from_next_stream(page_html: str) -> str | None:
     """
-    Primary: extract lyrics from Next.js streaming payload fragments.
+    Extract lyrics by scoring each Next.js streamed payload fragment individually.
 
-    Strategy:
-    - Extract payload fragments.
-    - Score each fragment.
-    - Also score adjacent pairs (lyrics can be split across two pushes).
-    - Return best above threshold.
+    We do not concatenate fragments because most are framework plumbing.
     """
     payloads = _extract_next_f_payloads(page_html)
     if not payloads:
         return None
 
-    # 1) Single fragment candidates
-    best = _best_scored_text(payloads, threshold=420)
-    if best:
+    best: str | None = None
+    best_score = 0
+
+    for raw in payloads:
+        normalized = _normalize_text_block(raw)
+        sc = _score_lyrics_candidate(normalized)
+        if sc > best_score:
+            best_score = sc
+            best = normalized
+
+    # Threshold tuned to avoid returning random app text.
+    # If you find this too strict on some pages, drop to ~340.
+    if best and best_score >= 420:
         return best
 
-    # 2) Adjacent pair candidates (helps when lyrics are split)
-    paired: list[str] = []
-    for i in range(len(payloads) - 1):
-        paired.append(payloads[i] + payloads[i + 1])
-
-    return _best_scored_text(paired, threshold=420)
+    return None
 
 
-def _extract_lyrics_from_embedded_json(page_html: str) -> str | None:
+def _parse_title_artist_from_description(description: str | None) -> tuple[str | None, str | None, str | None]:
     """
-    Fallback: scan embedded JSON state and pick the best multi-line text block.
+    Best-effort parsing:
+      "<title> by <artist display>. ... (@username)"
+
+    Suno sometimes mutates this. We keep it conservative.
     """
-    blobs: list[Any] = []
-    next_data = _extract_next_data(page_html)
-    if next_data is not None:
-        blobs.append(next_data)
-    blobs.extend(_extract_application_json_scripts(page_html))
+    if not description:
+        return None, None, None
 
-    if not blobs:
-        return None
+    desc = description.strip()
+    if " by " not in desc:
+        return None, None, None
 
-    candidates: list[str] = []
-    for blob in blobs:
-        candidates.extend(_collect_text_candidates(blob))
+    left, right = desc.split(" by ", 1)
+    song_title = left.strip() or None
 
-    # JSON candidates are usually noisier; demand higher confidence.
-    return _best_scored_text(candidates, threshold=520)
+    # Extract username (optional)
+    artist_username = None
+    at_match = re.search(r"\(@(?P<handle>[^)]+)\)", right)
+    if at_match:
+        artist_username = at_match.group("handle").strip() or None
+        right = re.sub(r"\s*\(@[^)]+\)\s*", "", right).strip()
 
+    # Trim promo sentence if present
+    promo = "listen and make your own on suno"
+    if promo in right.lower():
+        right = right.split(".", 1)[0].strip()
 
-def _extract_lyrics_from_html_paragraph(page_html: str) -> str | None:
-    """
-    Rare fallback: lyrics in server HTML in a pre-wrap paragraph.
-    """
+    artist_display = right.strip() or None
+    return song_title, artist_display, artist_username
 
-    def clean(body: str) -> str:
-        text = _TAG_STRIP_RE.sub("", body)
-        return _normalize_text_block(text)
-
-    m = _LYRICS_P_RE.search(page_html)
-    if m:
-        lyrics = clean(m.group("body"))
-        return lyrics or None
-
-    candidates: list[str] = []
-    for pm in _LYRICS_P_FALLBACK_RE.finditer(page_html):
-        candidates.append(clean(pm.group("body")))
-
-    return _best_scored_text(candidates, threshold=520)
-
-
-def _extract_lyrics(page_html: str) -> str | None:
-    """
-    Single entry point for lyric extraction, in priority order.
-    """
-    lyrics = _extract_lyrics_from_next_f(page_html)
-    if lyrics:
-        return lyrics
-
-    lyrics = _extract_lyrics_from_embedded_json(page_html)
-    if lyrics:
-        return lyrics
-
-    return _extract_lyrics_from_html_paragraph(page_html)
-
-
-# -----------------------------
-# Main client
-# -----------------------------
 
 class HttpxSunoClient:
     """
-    Lightweight Suno metadata fetcher using plain HTTP.
+    Suno metadata client that supports:
+      - /s/<id> pages
+      - /song/<uuid> pages
+      - direct mp3 URLs (converted to /song/<uuid>)
 
-    Extracts:
-    - og:image, og:audio, og:video
-    - meta description / title
-    - lyrics via Next.js streaming payloads (primary)
+    Lyrics extraction relies on Next.js streaming payloads (self.__next_f.push).
     """
 
     def __init__(
@@ -423,26 +267,33 @@ class HttpxSunoClient:
         self._timeout = httpx.Timeout(timeout_seconds)
         self._headers = {"User-Agent": user_agent}
 
-    async def fetch_track(self, suno_url: str) -> SunoTrackData:
+    async def fetch_track(self, url: str) -> SunoTrackData:
         """
-        Fetch and parse metadata from a Suno URL.
+        Fetch and parse metadata from a Suno track URL.
+
+        Args:
+            url: Suno track URL or mp3 URL.
+
+        Returns:
+            SunoTrackData
 
         Raises:
-            SunoScrapeError: hard network failures / non-200 responses.
+            SunoScrapeError: on network failures or invalid responses.
         """
+        normalized_url = _normalize_track_url(url)
+
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,
                 headers=self._headers,
                 follow_redirects=True,
             ) as client:
-                resp = await client.get(suno_url)
+                resp = await client.get(normalized_url)
                 resp.raise_for_status()
                 page_html = resp.text
+                final_url = str(resp.url)
         except Exception as exc:
-            raise SunoScrapeError(
-                f"Failed to fetch Suno page: {suno_url}. Error: {exc}"
-            ) from exc
+            raise SunoScrapeError(f"Failed to fetch Suno page: {normalized_url}. Error: {exc}") from exc
 
         meta = _parse_meta_tags(page_html)
 
@@ -451,18 +302,19 @@ class HttpxSunoClient:
         og_image = meta.get("og:image")
         og_audio = meta.get("og:audio")
 
-        song_title, artist_display, artist_username = _parse_title_from_description(description)
+        # Parse title/artist from description first (fast), fallback to <title>
+        title, artist_display, artist_username = _parse_title_artist_from_description(description)
 
-        if not song_title:
-            t = _TITLE_RE.search(page_html)
-            if t:
-                song_title = _strip_html_whitespace(t.group("title"))
+        if not title:
+            m_title = _TITLE_RE.search(page_html)
+            if m_title:
+                title = _strip_html_whitespace(m_title.group("title"))
 
-        lyrics = _extract_lyrics(page_html)
+        lyrics = _extract_lyrics_from_next_stream(page_html)
 
         return SunoTrackData(
-            suno_url=suno_url,
-            title=song_title,
+            suno_url=final_url,  # final URL after redirects (could normalize /s -> /song or vice versa)
+            title=title,
             artist_display=artist_display,
             artist_username=artist_username,
             lyrics=lyrics,
