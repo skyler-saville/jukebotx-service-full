@@ -23,6 +23,7 @@ This repo is set up so you can:
 
   * [Bot](#bot)
   * [API](#api)
+* [Commands](#commands)
 * [Smoke tests](#smoke-tests)
 * [Development workflow](#development-workflow)
 * [Make targets](#make-targets)
@@ -42,6 +43,8 @@ This repo is set up so you can:
 
   * Commands/cogs, queue interactions, voice playback
   * Permissions checks
+  * FFmpeg-backed audio playback in voice channels
+  * Auto-ingests Suno links into Postgres when the bot is active in a guild
   * Uses core use-cases to avoid bot-specific business logic
 
 * **API** (`apps/api`)
@@ -57,7 +60,7 @@ This repo is set up so you can:
 * **Infrastructure adapters** (`packages/infra`)
 
   * HTTP clients and repo implementations that satisfy core ports
-  * Async SQLAlchemy repositories + Postgres models
+  * Async SQLAlchemy repositories + Postgres models (used by the bot for ingestion)
   * Suno scraping via **httpx** (no browser automation)
   * Postgres is the default persistence target
 
@@ -147,7 +150,8 @@ jukebotx-service-full/
 
 * Python **3.11**
 * Poetry installed
-* FFmpeg installed (only needed once voice playback is enabled)
+* FFmpeg installed (required for voice playback)
+* Postgres available (required for Suno ingestion)
 
 ### Install dependencies
 
@@ -227,6 +231,38 @@ poetry run uvicorn jukebotx_api.main:app --reload
 
 ---
 
+## Commands
+
+The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/main.py`).
+
+### Voice + queue
+
+* `;join` — join your current voice channel
+* `;leave` — disconnect and reset the session
+* `;add <url>` — queue a track (Suno or other audio URL)
+* `;q` — show now playing + next up
+* `;np` — show now playing
+* `;p` — start playback
+* `;n` — skip (mod-only)
+* `;s` — stop playback (mod-only)
+* `;clear` — clear queue (mod-only)
+* `;remove <index>` — remove item from queue (mod-only)
+
+### Session controls
+
+* `;open` — open submissions
+* `;close` — close submissions
+* `;limit <count>` — set per-user submission limit (mod-only)
+* `;autoplay [count|off]` — auto-play up to `count` tracks or until empty (mod-only)
+* `;dj [count|off]` — DJ mode for `count` tracks or until empty (mod-only)
+
+### Announcements
+
+* `;ping here <message>` — announce in the jam session channel (mod-only)
+* `;ping jamsession <message>` — mention the jam session role (mod-only)
+
+---
+
 ## Smoke tests
 
 These are designed for fast feedback while wiring infra/adapters.
@@ -298,13 +334,16 @@ find . -type f -name "*.pyc" -delete
 Your repo already uses Make (good). Typical targets to include:
 
 * `make install` — `poetry install`
+* `make bot` — run bot
+* `make api` — run API
 * `make fmt` — `ruff format .`
 * `make lint` — `ruff check .` + `mypy .`
 * `make test` — `pytest -q`
-* `make bot` — run bot
-* `make api` — run API
 * `make smoke-suno URL=...` — run Suno client smoke test
-* `make up` / `make down` / `make logs` — Docker Compose lifecycle helpers
+* `make up` / `make up-d` — Docker Compose lifecycle helpers
+* `make down` / `make destroy` — stop containers (destroy removes volumes)
+* `make logs` / `make ps` / `make restart` — Compose status helpers
+* `make db-shell` / `make db-reset` / `make db-backup` / `make db-restore` — Postgres helpers
 
 If a target doesn’t exist yet, add it—Make is your “team interface” even if the team is just you.
 
@@ -394,5 +433,4 @@ If you want outside contributions later:
 ## License
 
 TBD.
-
 
