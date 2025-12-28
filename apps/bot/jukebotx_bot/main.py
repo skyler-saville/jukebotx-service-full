@@ -96,6 +96,9 @@ class JukeBot(commands.Bot):
                 await ctx.send("🚫 You don’t have permission to use that command.")
                 return
 
+            if isinstance(error, commands.CommandNotFound):
+                return
+
             # Show the actual error in chat during dev; remove later if you want.
             await ctx.send(f"⚠️ Command failed: {type(error).__name__}: {error}")
             raise error
@@ -132,14 +135,21 @@ class JukeBot(commands.Bot):
         async def on_message(message: discord.Message) -> None:
             """
             Ingest Suno URLs from messages when the bot is active in the guild VC.
-            Always calls process_commands to keep prefix commands working.
+            Invokes prefix commands before attempting auto-ingest.
             """
             if message.author.bot:
                 return
 
+            ctx = await self.get_context(message)
+            if ctx.command is not None:
+                await self.invoke(ctx)
+                return
+
+            if ctx.invoked_with:
+                return
+
             # DMs: still allow commands to process.
             if message.guild is None:
-                await self.process_commands(message)
                 return
 
             # Only auto-ingest when bot is currently connected in the guild.
@@ -153,7 +163,11 @@ class JukeBot(commands.Bot):
                 return
 
             added_any = False
+            skipped_playlist = False
             for url in urls:
+                if "https://suno.com/playlist/" in url:
+                    skipped_playlist = True
+                    continue
                 try:
                     result = await self.deps.ingest_use_case.execute(
                         IngestSunoLinkInput(
@@ -193,6 +207,9 @@ class JukeBot(commands.Bot):
                     await message.add_reaction("🤘")
                 except discord.HTTPException:
                     pass
+
+            if skipped_playlist:
+                await message.channel.send("Playlist links aren’t auto-ingested. Use `;playlist <url>` instead.")
 
             await self.process_commands(message)
 
