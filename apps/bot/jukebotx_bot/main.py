@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Optional
 
 import discord
 from discord.ext import commands
 
+from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.session import SessionManager, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
@@ -32,6 +34,7 @@ class BotDeps:
     """
     session_manager: SessionManager
     ingest_use_case: IngestSunoLink
+    audio_manager: AudioControllerManager
 
 
 class JukeBot(commands.Bot):
@@ -55,6 +58,8 @@ class JukeBot(commands.Bot):
         self.settings = settings
         self.deps = deps
 
+        logging.basicConfig(level=logging.INFO)
+
         # Register events + commands once, right after construction.
         self._register_events()
         self._register_commands()
@@ -75,6 +80,9 @@ class JukeBot(commands.Bot):
     # -----------------------------
     def _get_session(self, ctx: commands.Context) -> SessionManager:
         return self.deps.session_manager
+
+    def _get_audio(self, ctx: commands.Context) -> AudioControllerManager:
+        return self.deps.audio_manager
 
     # -----------------------------
     # Events
@@ -224,6 +232,8 @@ class JukeBot(commands.Bot):
             session.reset()
 
             if ctx.voice_client is not None:
+                audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
+                await audio.stop(ctx.voice_client)
                 await ctx.voice_client.disconnect()
 
             await ctx.send("Left the voice channel. Session reset.")
@@ -318,8 +328,9 @@ class JukeBot(commands.Bot):
 
             await ctx.send(f"Queued: {track.title} (requested by {track.requester_name}).")
 
-            if session.autoplay_enabled and session.now_playing is None:
-                started = session.start_next_track()
+            if session.autoplay_enabled and session.now_playing is None and ctx.voice_client is not None:
+                audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
+                started = await audio.play_next(ctx.voice_client)
                 if started is not None:
                     await ctx.send(f"Now playing: {started.title} (requested by {started.requester_name}).")
 
@@ -370,6 +381,7 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             if session.now_playing is not None:
                 await ctx.send(f"Already playing: {session.now_playing.title}. Use ;n to skip.")
                 return
@@ -378,7 +390,7 @@ class JukeBot(commands.Bot):
                 await ctx.send("Queue is empty. Use ;add <url>.")
                 return
 
-            started = session.start_next_track()
+            started = await audio.play_next(ctx.voice_client)
             if started is None:
                 await ctx.send("Queue is empty. Use ;add <url>.")
                 return
@@ -395,9 +407,13 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
+            if ctx.voice_client is None:
+                await ctx.send("I'm not connected to a voice channel.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
-            session.stop_playback()
-            started = session.start_next_track()
+            audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
+            started = await audio.skip(ctx.voice_client)
             if started is None:
                 await ctx.send("Skipped. Queue is now empty; playback stopped.")
                 return
@@ -414,8 +430,13 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
+            if ctx.voice_client is None:
+                await ctx.send("I'm not connected to a voice channel.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
-            session.stop_playback()
+            audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
+            await audio.stop(ctx.voice_client)
             await ctx.send("Playback stopped.")
 
         @self.command(name="clear")
@@ -551,6 +572,7 @@ def build_bot() -> JukeBot:
 
     deps = BotDeps(
         session_manager=SessionManager(),
+        audio_manager=AudioControllerManager(),
         ingest_use_case=IngestSunoLink(
             suno_client=HttpxSunoClient(),
             track_repo=PostgresTrackRepository(async_session_factory),
