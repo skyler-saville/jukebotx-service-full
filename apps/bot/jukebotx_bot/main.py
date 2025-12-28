@@ -18,6 +18,7 @@ from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
+from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
 
 
 def _is_mod(member: discord.Member) -> bool:
@@ -35,6 +36,7 @@ class BotDeps:
     session_manager: SessionManager
     ingest_use_case: IngestSunoLink
     audio_manager: AudioControllerManager
+    playlist_client: HttpxSunoPlaylistClient
 
 
 class JukeBot(commands.Bot):
@@ -294,10 +296,14 @@ class JukeBot(commands.Bot):
             session.submissions_open = False
             await ctx.send("Submissions are closed.")
 
-        @self.command(name="add")
-        async def add(ctx: commands.Context, url: str) -> None:
+        @self.command(name="playlist")
+        async def playlist(ctx: commands.Context, url: str) -> None:
             if ctx.guild is None or not isinstance(ctx.author, discord.Member):
                 await ctx.send("This command can only be used in a server.")
+                return
+
+            if not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
                 return
 
             if ctx.voice_client is None:
@@ -310,23 +316,42 @@ class JukeBot(commands.Bot):
                 await ctx.send("Submissions are closed.")
                 return
 
+            if "https://suno.com/playlist/" not in url:
+                await ctx.send("Please provide a Suno playlist URL like https://suno.com/playlist/....")
+                return
+
+            try:
+                playlist_data = await self.deps.playlist_client.fetch_playlist(url)
+            except SunoScrapeError as exc:
+                await ctx.send(f"Failed to fetch playlist: {exc}")
+                return
+
+            if not playlist_data.mp3_urls:
+                await ctx.send("No songs were found in that playlist.")
+                return
+
             user_id = ctx.author.id
             if session.per_user_limit is not None and not _is_mod(ctx.author):
                 current = session.per_user_counts.get(user_id, 0)
-                if current >= session.per_user_limit:
+                if current + len(playlist_data.mp3_urls) > session.per_user_limit:
                     await ctx.send("You have reached the submission limit for this session.")
                     return
 
-            track = Track(
-                url=url,
-                title=url,
-                requester_id=ctx.author.id,
-                requester_name=ctx.author.display_name,
-            )
-            session.queue.append(track)
-            session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
+            for mp3_url in playlist_data.mp3_urls:
+                track = Track(
+                    url=mp3_url,
+                    title=mp3_url,
+                    requester_id=ctx.author.id,
+                    requester_name=ctx.author.display_name,
+                )
+                session.queue.append(track)
+                session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
 
-            await ctx.send(f"Queued: {track.title} (requested by {track.requester_name}).")
+            session.submissions_open = False
+            await ctx.send(
+                "Queued "
+                f"{len(playlist_data.mp3_urls)} track(s) from the playlist. Submissions are now closed."
+            )
 
             if session.autoplay_enabled and session.now_playing is None and ctx.voice_client is not None:
                 audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
@@ -387,12 +412,12 @@ class JukeBot(commands.Bot):
                 return
 
             if not session.queue:
-                await ctx.send("Queue is empty. Use ;add <url>.")
+                await ctx.send("Queue is empty. Use ;playlist <url>.")
                 return
 
             started = await audio.play_next(ctx.voice_client)
             if started is None:
-                await ctx.send("Queue is empty. Use ;add <url>.")
+                await ctx.send("Queue is empty. Use ;playlist <url>.")
                 return
 
             await ctx.send(f"Now playing: {started.title} (requested by {started.requester_name}).")
@@ -579,6 +604,7 @@ def build_bot() -> JukeBot:
             submission_repo=PostgresSubmissionRepository(async_session_factory),
             queue_repo=PostgresQueueRepository(async_session_factory),
         ),
+        playlist_client=HttpxSunoPlaylistClient(),
     )
 
     return JukeBot(
