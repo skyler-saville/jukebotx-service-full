@@ -115,6 +115,4 @@ smoke-playlist:
 	poetry run python scripts/smoke_playlist_client.py "$$URL_TO_USE"
 
 
-smoke-audio:
-	PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
-	poetry run python scripts/smoke_audio_urls.py
+
