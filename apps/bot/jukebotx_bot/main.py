@@ -348,22 +348,46 @@ class JukeBot(commands.Bot):
                 await ctx.send(f"Failed to fetch playlist: {exc}")
                 return
 
-            if not playlist_data.mp3_urls:
+            if not playlist_data.items:
                 await ctx.send("No songs were found in that playlist.")
                 return
 
             user_id = ctx.author.id
             if session.per_user_limit is not None and not _is_mod(ctx.author):
                 current = session.per_user_counts.get(user_id, 0)
-                if current + len(playlist_data.mp3_urls) > session.per_user_limit:
+                if current + len(playlist_data.items) > session.per_user_limit:
                     await ctx.send("You have reached the submission limit for this session.")
                     return
 
-            for mp3_url in playlist_data.mp3_urls:
+            for item in playlist_data.items:
+                display_url = item.suno_track_url or item.mp3_url
+                track_title = display_url
+                audio_url = item.mp3_url
+                page_url = item.suno_track_url
+
+                if item.suno_track_url is not None:
+                    try:
+                        ingest_result = await self.deps.ingest_use_case.execute(
+                            IngestSunoLinkInput(
+                                guild_id=ctx.guild.id,
+                                channel_id=ctx.channel.id,
+                                message_id=ctx.message.id,
+                                author_id=ctx.author.id,
+                                suno_url=item.suno_track_url,
+                            )
+                        )
+                    except SunoScrapeError as exc:
+                        logging.warning("Failed to ingest Suno URL %s: %s", item.suno_track_url, exc)
+                    else:
+                        if ingest_result.track_title:
+                            track_title = ingest_result.track_title
+                        if ingest_result.mp3_url:
+                            audio_url = ingest_result.mp3_url
+
                 track = Track(
-                    audio_url=mp3_url,
-                    page_url=None,
-                    title=mp3_url,
+                    audio_url=audio_url,
+                    page_url=page_url,
+                    title=track_title,
                     requester_id=ctx.author.id,
                     requester_name=ctx.author.display_name,
                 )
@@ -373,7 +397,7 @@ class JukeBot(commands.Bot):
             session.submissions_open = False
             await ctx.send(
                 "Queued "
-                f"{len(playlist_data.mp3_urls)} track(s) from the playlist. Submissions are now closed."
+                f"{len(playlist_data.items)} track(s) from the playlist. Submissions are now closed."
             )
 
             if session.autoplay_enabled and session.now_playing is None and ctx.voice_client is not None:
