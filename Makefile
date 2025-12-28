@@ -1,5 +1,5 @@
 .PHONY: bot api up up-d build down destroy logs ps restart \
-        db-shell db-reset db-backup db-restore fmt lint test smoke-suno
+        db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-playlist
 
 .ONESHELL:
 SHELL := /bin/bash
@@ -98,5 +98,21 @@ smoke-suno:
 		echo "ERROR: URL or SUNO_SMOKE_URL must be set"; \
 		exit 1; \
 	fi
-	PYTHONPATH=$(PYTHONPATH) poetry run python scripts/smoke_suno_client.py "$(URL)$(SUNO_SMOKE_URL)"
+	@URL_TO_USE="$(URL)"; \
+	if [ -z "$$URL_TO_USE" ]; then URL_TO_USE="$(SUNO_SMOKE_URL)"; fi; \
+	PYTHONPATH=$(PYTHONPATH) \
+	poetry run python scripts/smoke_suno_client.py "$$URL_TO_USE"
+
+
+smoke-playlist:
+	@if [ -z "$(URL)" ] && [ -z "$(PLAYLIST_SMOKE_URL)" ]; then \
+		echo "ERROR: URL or PLAYLIST_SMOKE_URL must be set"; \
+		exit 1; \
+	fi
+	@URL_TO_USE="$(URL)"; \
+	if [ -z "$$URL_TO_USE" ]; then URL_TO_USE="$(PLAYLIST_SMOKE_URL)"; fi; \
+	PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
+	poetry run python scripts/smoke_playlist_client.py "$$URL_TO_USE"
+
+
 
