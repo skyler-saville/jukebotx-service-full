@@ -8,6 +8,7 @@ from typing import Optional
 
 import discord
 
+from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
 
 
@@ -81,7 +82,21 @@ class GuildAudioController:
             self.session.stop_playback()
 
         if (self.session.autoplay_enabled or self.session.dj_enabled) and self.session.queue:
-            await self.play_next(voice_client)
+            started = await self.play_next(voice_client)
+            if started is not None:
+                await self._announce_now_playing(voice_client, started)
+
+    async def _announce_now_playing(self, voice_client: discord.VoiceClient, track: Track) -> None:
+        channel_id = self.session.now_playing_channel_id
+        if channel_id is None or voice_client.guild is None:
+            return
+
+        channel = voice_client.guild.get_channel(channel_id)
+        if channel is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return
+
+        embed = build_now_playing_embed(track)
+        await channel.send(embed=embed)
 
     def _build_source(self, url: str) -> discord.FFmpegPCMAudio:
         self._assert_audio_url(url)
