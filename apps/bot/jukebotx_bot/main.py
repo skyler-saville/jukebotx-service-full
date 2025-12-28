@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands
 
 from jukebotx_bot.discord.audio import AudioControllerManager
+from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionManager, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
@@ -333,6 +334,7 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            session.now_playing_channel_id = ctx.channel.id
 
             if not session.submissions_open and not _is_mod(ctx.author):
                 await ctx.send("Submissions are closed.")
@@ -404,7 +406,8 @@ class JukeBot(commands.Bot):
                 audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
                 started = await audio.play_next(ctx.voice_client)
                 if started is not None:
-                    await ctx.send(f"Now playing: {started.title} (requested by {started.requester_name}).")
+                    embed = build_now_playing_embed(started)
+                    await ctx.send(embed=embed)
 
         @self.command(name="q")
         async def queue(ctx: commands.Context) -> None:
@@ -414,13 +417,6 @@ class JukeBot(commands.Bot):
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             lines: list[str] = []
-
-            if session.now_playing is not None:
-                lines.append(
-                    f"Now Playing: {session.now_playing.title} (requested by {session.now_playing.requester_name})"
-                )
-            else:
-                lines.append("Now Playing: nothing")
 
             if session.queue:
                 lines.append("Up next:")
@@ -442,9 +438,8 @@ class JukeBot(commands.Bot):
                 await ctx.send("Nothing is playing.")
                 return
 
-            await ctx.send(
-                f"Now Playing: {session.now_playing.title} (requested by {session.now_playing.requester_name})"
-            )
+            embed = build_now_playing_embed(session.now_playing)
+            await ctx.send(embed=embed)
 
         @self.command(name="p")
         async def play(ctx: commands.Context) -> None:
@@ -453,6 +448,7 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            session.now_playing_channel_id = ctx.channel.id
             audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             if session.now_playing is not None:
                 await ctx.send(f"Already playing: {session.now_playing.title}. Use ;n to skip.")
@@ -467,7 +463,8 @@ class JukeBot(commands.Bot):
                 await ctx.send("Queue is empty. Use ;playlist <url>.")
                 return
 
-            await ctx.send(f"Now playing: {started.title} (requested by {started.requester_name}).")
+            embed = build_now_playing_embed(started)
+            await ctx.send(embed=embed)
 
         @self.command(name="n")
         async def skip(ctx: commands.Context) -> None:
@@ -490,7 +487,8 @@ class JukeBot(commands.Bot):
                 await ctx.send("Skipped. Queue is now empty; playback stopped.")
                 return
 
-            await ctx.send(f"Skipped. Now playing: {started.title} (requested by {started.requester_name}).")
+            embed = build_now_playing_embed(started)
+            await ctx.send(content="Skipped.", embed=embed)
 
         @self.command(name="s")
         async def stop(ctx: commands.Context) -> None:
@@ -574,6 +572,7 @@ class JukeBot(commands.Bot):
             session = self._get_session(ctx).for_guild(ctx.guild.id)
 
             if value is None:
+                session.now_playing_channel_id = ctx.channel.id
                 session.set_autoplay(None)
                 await ctx.send("Autoplay enabled until queue is empty.")
                 return
@@ -593,6 +592,7 @@ class JukeBot(commands.Bot):
                 await ctx.send("Autoplay count must be at least 1.")
                 return
 
+            session.now_playing_channel_id = ctx.channel.id
             session.set_autoplay(remaining)
             await ctx.send(f"Autoplay enabled for the next {remaining} track(s).")
 
@@ -609,6 +609,7 @@ class JukeBot(commands.Bot):
             session = self._get_session(ctx).for_guild(ctx.guild.id)
 
             if value is None:
+                session.now_playing_channel_id = ctx.channel.id
                 session.set_dj(None)
                 await ctx.send("DJ mode enabled until queue is empty.")
                 return
@@ -628,6 +629,7 @@ class JukeBot(commands.Bot):
                 await ctx.send("DJ count must be at least 1.")
                 return
 
+            session.now_playing_channel_id = ctx.channel.id
             session.set_dj(remaining)
             await ctx.send(f"DJ mode enabled for the next {remaining} track(s).")
 
