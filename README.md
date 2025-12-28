@@ -239,7 +239,7 @@ The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/
 
 * `;join` — join your current voice channel
 * `;leave` — disconnect and reset the session
-* `;add <url>` — queue a track (Suno or other audio URL)
+* `;playlist <url>` — queue tracks from a Suno playlist URL
 * `;q` — show now playing + next up
 * `;np` — show now playing
 * `;p` — start playback
@@ -433,4 +433,3 @@ If you want outside contributions later:
 ## License
 
 TBD.
-
