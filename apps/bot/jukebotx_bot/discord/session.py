@@ -7,7 +7,8 @@ import time
 
 @dataclass
 class Track:
-    url: str
+    audio_url: str
+    page_url: str | None
     title: str
     requester_id: int
     requester_name: str

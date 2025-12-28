@@ -21,10 +21,6 @@ from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
 
 
-def select_playback_url(*, suno_url: str, mp3_url: str | None) -> str:
-    return mp3_url or suno_url
-
-
 def _is_mod(member: discord.Member) -> bool:
     """Return True if the member has server-level moderation permissions."""
     perms = member.guild_permissions
@@ -196,8 +192,13 @@ class JukeBot(commands.Bot):
                 if not session.submissions_open:
                     continue
 
+                if not result.mp3_url:
+                    logging.warning("Skipping Suno URL without mp3_url: %s", url)
+                    continue
+
                 track = Track(
-                    url=select_playback_url(suno_url=url, mp3_url=result.mp3_url),
+                    audio_url=result.mp3_url,
+                    page_url=url,
                     title=result.track_title or url,
                     requester_id=message.author.id,
                     requester_name=getattr(message.author, "display_name", "unknown"),
@@ -360,7 +361,8 @@ class JukeBot(commands.Bot):
 
             for mp3_url in playlist_data.mp3_urls:
                 track = Track(
-                    url=mp3_url,
+                    audio_url=mp3_url,
+                    page_url=None,
                     title=mp3_url,
                     requester_id=ctx.author.id,
                     requester_name=ctx.author.display_name,
