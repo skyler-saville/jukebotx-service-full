@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import html as html_lib
+import logging
+import random
 import re
 from dataclasses import dataclass
 from typing import Final
 
 import httpx
 
+
+_LOG = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SunoTrackData:
@@ -261,11 +266,31 @@ class HttpxSunoClient:
     def __init__(
         self,
         *,
-        timeout_seconds: float = 10.0,
+        timeout: httpx.Timeout | None = None,
         user_agent: str = "Mozilla/5.0 (compatible; JukeBotx/1.0)",
+        max_attempts: int = 3,
     ) -> None:
-        self._timeout = httpx.Timeout(timeout_seconds)
-        self._headers = {"User-Agent": user_agent}
+        self._timeout = timeout or httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        self._headers = {
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://suno.com/",
+        }
+        self._max_attempts = max(1, max_attempts)
+
+    @staticmethod
+    def _format_http_error(exc: httpx.HTTPStatusError, normalized_url: str) -> str:
+        response = exc.response
+        snippet = response.text[:500].replace("\n", " ").strip()
+        return (
+            "Failed to fetch Suno page: "
+            f"{normalized_url}. Status: {response.status_code}. "
+            f"Final URL: {response.url}. "
+            f"Body snippet: {snippet!r}"
+        )
 
     async def fetch_track(self, url: str) -> SunoTrackData:
         """
@@ -282,18 +307,86 @@ class HttpxSunoClient:
         """
         normalized_url = _normalize_track_url(url)
 
-        try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout,
-                headers=self._headers,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(normalized_url)
-                resp.raise_for_status()
-                page_html = resp.text
-                final_url = str(resp.url)
-        except Exception as exc:
-            raise SunoScrapeError(f"Failed to fetch Suno page: {normalized_url}. Error: {exc}") from exc
+        retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
+        page_html: str | None = None
+        final_url = normalized_url
+
+        async with httpx.AsyncClient(
+            timeout=self._timeout,
+            headers=self._headers,
+            follow_redirects=True,
+            http2=True,
+        ) as client:
+            last_exc: BaseException | None = None
+            for attempt in range(1, self._max_attempts + 1):
+                try:
+                    resp = await client.get(normalized_url)
+                    if resp.status_code in retryable_statuses:
+                        snippet = resp.text[:300].replace("\n", " ").strip()
+                        raise SunoScrapeError(
+                            "Retryable Suno response. "
+                            f"Status: {resp.status_code}. URL: {resp.url}. "
+                            f"Body snippet: {snippet!r}"
+                        )
+
+                    try:
+                        resp.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        raise SunoScrapeError(self._format_http_error(exc, normalized_url)) from exc
+
+                    page_html = resp.text
+                    final_url = str(resp.url)
+                    last_exc = None
+                    break
+                except (httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
+                    last_exc = exc
+                    _LOG.warning(
+                        "Timeout fetching Suno page (attempt %d/%d): %s exc_repr=%r",
+                        attempt,
+                        self._max_attempts,
+                        normalized_url,
+                        exc,
+                    )
+                except httpx.RequestError as exc:
+                    last_exc = exc
+                    _LOG.warning(
+                        "Request error fetching Suno page (attempt %d/%d): %s exc_type=%s exc_repr=%r",
+                        attempt,
+                        self._max_attempts,
+                        normalized_url,
+                        type(exc).__name__,
+                        exc,
+                    )
+                except SunoScrapeError as exc:
+                    last_exc = exc
+                    if attempt == self._max_attempts:
+                        break
+                    _LOG.warning(
+                        "Retrying Suno fetch (attempt %d/%d): %s",
+                        attempt,
+                        self._max_attempts,
+                        exc,
+                    )
+
+                if attempt < self._max_attempts:
+                    await asyncio.sleep((0.6 * (2 ** (attempt - 1))) + random.random() * 0.3)
+
+            else:
+                last_exc = None
+
+        if page_html is None and last_exc is not None:
+            raise SunoScrapeError(
+                f"Failed to fetch Suno page after {self._max_attempts} attempts: {normalized_url}. "
+                f"exc_type={type(last_exc).__name__} exc_repr={last_exc!r}"
+            ) from last_exc
+
+        if len(page_html) < 2000:
+            snippet = page_html[:500].replace("\n", " ").strip()
+            raise SunoScrapeError(
+                "Fetched Suno page but HTML was too small to be useful. "
+                f"URL: {final_url}. Length: {len(page_html)}. "
+                f"Body snippet: {snippet!r}"
+            )
 
         meta = _parse_meta_tags(page_html)
 

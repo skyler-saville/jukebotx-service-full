@@ -10,6 +10,8 @@ class Track:
     audio_url: str
     page_url: str | None
     title: str
+    artist_display: str | None
+    media_url: str | None
     requester_id: int
     requester_name: str
 
@@ -26,6 +28,7 @@ class SessionState:
     queue: list[Track] = field(default_factory=list)
     now_playing: Track | None = None
     now_playing_started_at: float | None = None
+    now_playing_channel_id: int | None = None
 
     def reset(self) -> None:
         self.submissions_open = True
@@ -36,6 +39,7 @@ class SessionState:
         self.dj_enabled = False
         self.dj_remaining = None
         self.queue.clear()
+        self.now_playing_channel_id = None
         self.stop_playback()
 
     def stop_playback(self) -> None:

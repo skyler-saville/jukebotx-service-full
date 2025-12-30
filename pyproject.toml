@@ -14,7 +14,7 @@ sqlalchemy = "^2.0.45"
 alembic = "^1.17.2"
 asyncpg = "^0.31.0"
 discord-py = "^2.6.4"
-httpx = "^0.28.1"
+httpx = { version = "^0.28.1", extras = ["http2"] }
 uvicorn = {extras = ["standard"], version = "^0.38.0"}
 pynacl = "^1.6.1"
 

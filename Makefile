@@ -1,5 +1,5 @@
 .PHONY: bot api up up-d build down destroy logs ps restart \
-        db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-playlist
+        db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-playlist smoke-audio
 
 .ONESHELL:
 SHELL := /bin/bash
@@ -115,4 +115,6 @@ smoke-playlist:
 	poetry run python scripts/smoke_playlist_client.py "$$URL_TO_USE"
 
 
-
+smoke-audio:
+	PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
+	poetry run python scripts/smoke_audio_urls.py
