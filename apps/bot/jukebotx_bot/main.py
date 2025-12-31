@@ -416,6 +416,7 @@ class JukeBot(commands.Bot):
                 audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
                 started = await audio.play_next(ctx.voice_client)
                 if started is not None:
+                    session.now_playing_channel_id = ctx.channel.id
                     embed = build_now_playing_embed(started)
                     await ctx.send(embed=embed)
 
@@ -473,6 +474,7 @@ class JukeBot(commands.Bot):
                 await ctx.send("Queue is empty. Use ;playlist <url>.")
                 return
 
+            session.now_playing_channel_id = ctx.channel.id
             embed = build_now_playing_embed(started)
             await ctx.send(embed=embed)
 
@@ -497,6 +499,7 @@ class JukeBot(commands.Bot):
                 await ctx.send("Skipped. Queue is now empty; playback stopped.")
                 return
 
+            session.now_playing_channel_id = ctx.channel.id
             embed = build_now_playing_embed(started)
             await ctx.send(content="Skipped.", embed=embed)
 
