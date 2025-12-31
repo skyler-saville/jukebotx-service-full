@@ -82,17 +82,41 @@ class GuildAudioController:
             self.session.stop_playback()
 
         if (self.session.autoplay_enabled or self.session.dj_enabled) and self.session.queue:
+            logger.info(
+                "Autoplay/DJ active for guild %s. autoplay_enabled=%s dj_enabled=%s queue_size=%s",
+                self.guild_id,
+                self.session.autoplay_enabled,
+                self.session.dj_enabled,
+                len(self.session.queue),
+            )
             started = await self.play_next(voice_client)
             if started is not None:
                 await self._announce_now_playing(voice_client, started)
 
     async def _announce_now_playing(self, voice_client: discord.VoiceClient, track: Track) -> None:
+        logger.info(
+            "Announcing now playing for guild %s: %s (channel_id=%s)",
+            self.guild_id,
+            track.title,
+            self.session.now_playing_channel_id,
+        )
         channel_id = self.session.now_playing_channel_id
         if channel_id is None or voice_client.guild is None:
+            logger.info(
+                "Skipping now playing announcement for guild %s: channel_id=%s guild=%s",
+                self.guild_id,
+                channel_id,
+                voice_client.guild is not None,
+            )
             return
 
         channel = voice_client.guild.get_channel(channel_id)
         if channel is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            logger.info(
+                "Skipping now playing announcement for guild %s: channel not found or invalid (%s)",
+                self.guild_id,
+                channel,
+            )
             return
 
         embed = build_now_playing_embed(track)
