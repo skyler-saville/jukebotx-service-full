@@ -46,3 +46,9 @@ class SessionTrackResponse(BaseModel):
     suno_url: str
     mp3_url: str | None
 
+
+
+class OpusStatusResponse(BaseModel):
+    track_id: UUID
+    ready: bool
+    status: str
