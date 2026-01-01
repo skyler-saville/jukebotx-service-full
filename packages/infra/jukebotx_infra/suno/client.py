@@ -29,7 +29,7 @@ class SunoTrackData:
 
     @property
     def media_url(self) -> str | None:
-        return self.video_url or self.image_url
+        return self.image_url or self.video_url
 
 
 class SunoScrapeError(RuntimeError):
