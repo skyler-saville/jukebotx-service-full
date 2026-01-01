@@ -20,7 +20,7 @@ class GuildAudioController:
         self.guild_id = guild_id
         self.session = session
         self._lock = asyncio.Lock()
-        self._current_source: Optional[discord.FFmpegPCMAudio] = None
+        self._current_source: Optional[discord.FFmpegOpusAudio] = None
         self._stderr_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -69,7 +69,7 @@ class GuildAudioController:
     async def _on_track_end(
         self,
         voice_client: discord.VoiceClient,
-        source: discord.FFmpegPCMAudio,
+        source: discord.FFmpegOpusAudio,
         error: Exception | None,
     ) -> None:
         if error is not None:
@@ -122,9 +122,9 @@ class GuildAudioController:
         embed = build_now_playing_embed(track)
         await channel.send(embed=embed)
 
-    def _build_source(self, url: str) -> discord.FFmpegPCMAudio:
+    def _build_source(self, url: str) -> discord.FFmpegOpusAudio:
         self._assert_audio_url(url)
-        source = discord.FFmpegPCMAudio(
+        source = discord.FFmpegOpusAudio(
             url,
             before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
             options="-vn",
@@ -142,7 +142,7 @@ class GuildAudioController:
         if not (lowered.endswith(".mp3") or "cdn" in lowered):
             raise ValueError(f"Refusing to pass non-audio URL to ffmpeg: {url}")
 
-    def _start_ffmpeg_logger(self, source: discord.FFmpegPCMAudio) -> None:
+    def _start_ffmpeg_logger(self, source: discord.FFmpegOpusAudio) -> None:
         process = getattr(source, "process", None)
         if process is None or process.stderr is None:
             return
