@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
+import os
+import re
+import tempfile
 from typing import Optional
 
 import discord
@@ -38,6 +42,8 @@ class BotDeps:
     ingest_use_case: IngestSunoLink
     audio_manager: AudioControllerManager
     playlist_client: HttpxSunoPlaylistClient
+    submission_repo: PostgresSubmissionRepository
+    queue_repo: PostgresQueueRepository
 
 
 class JukeBot(commands.Bot):
@@ -263,7 +269,63 @@ class JukeBot(commands.Bot):
                 await audio.stop(ctx.voice_client)
                 await ctx.voice_client.disconnect()
 
+            await self.deps.queue_repo.clear(guild_id=ctx.guild.id)
+            await self.deps.submission_repo.clear_for_channel(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+            )
+
             await ctx.send("Left the voice channel. Session reset.")
+
+        @self.command(name="setlist")
+        async def setlist(ctx: commands.Context) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if ctx.author.voice is None or ctx.author.voice.channel is None:
+                await ctx.send("You're not in a voice channel!")
+                return
+
+            tracks = await self.deps.submission_repo.list_tracks_for_channel(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+            )
+            if not tracks:
+                await ctx.send("No songs found for this session yet.")
+                return
+
+            channel_name = ctx.author.voice.channel.name.lower().strip()
+            channel_slug = re.sub(r"[^a-z0-9]+", "_", channel_name).strip("_") or "session"
+            date_stamp = datetime.now(timezone.utc).strftime("%b_%d_%Y").lower()
+            filename = f"{channel_slug}_{date_stamp}.txt"
+
+            lines = []
+            for track in tracks:
+                artist = track.artist_display or "Unknown Artist"
+                title = track.title or "Untitled"
+                url = track.suno_url or track.mp3_url or ""
+                lines.append(f"{artist} - {title} - {url}")
+
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp_file:
+                tmp_file.write("\n".join(lines))
+                tmp_path = tmp_file.name
+
+            try:
+                await ctx.author.send(
+                    content="Here's your session setlist!",
+                    file=discord.File(tmp_path, filename=filename),
+                )
+            except discord.Forbidden:
+                await ctx.send("I couldn't DM you the setlist. Please enable DMs and try again.")
+                return
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    logging.warning("Failed to delete temp setlist file: %s", tmp_path)
+
+            await ctx.send("Setlist sent via DM.")
 
         @self.command(name="ping")
         async def ping(ctx: commands.Context, target: str, *, message: str) -> None:
@@ -667,6 +729,8 @@ def build_bot() -> JukeBot:
             queue_repo=PostgresQueueRepository(async_session_factory),
         ),
         playlist_client=HttpxSunoPlaylistClient(),
+        submission_repo=PostgresSubmissionRepository(async_session_factory),
+        queue_repo=PostgresQueueRepository(async_session_factory),
     )
 
     return JukeBot(

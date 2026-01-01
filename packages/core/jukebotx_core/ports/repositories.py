@@ -39,6 +39,17 @@ class Submission:
 
 
 @dataclass(frozen=True)
+class SubmissionTrackInfo:
+    """
+    Track details joined to a submission for setlist exports.
+    """
+    artist_display: str | None
+    title: str | None
+    suno_url: str
+    mp3_url: str | None
+
+
+@dataclass(frozen=True)
 class QueueItem:
     """
     Guild-scoped queue item; "played" is per guild, not global.
