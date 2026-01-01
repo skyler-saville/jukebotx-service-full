@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
+from uuid import UUID
 
 
 @dataclass
@@ -27,6 +28,7 @@ class SessionState:
     dj_remaining: int | None = None
     queue: list[Track] = field(default_factory=list)
     now_playing: Track | None = None
+    now_playing_queue_item_id: UUID | None = None
     now_playing_started_at: float | None = None
     now_playing_channel_id: int | None = None
 
@@ -44,6 +46,7 @@ class SessionState:
 
     def stop_playback(self) -> None:
         self.now_playing = None
+        self.now_playing_queue_item_id = None
         self.now_playing_started_at = None
 
     def reset_submission_counts(self) -> None:
@@ -79,8 +82,7 @@ class SessionState:
             return None
 
         track = self.queue.pop(0)
-        self.now_playing = track
-        self.now_playing_started_at = time.monotonic()
+        self.start_playback(track=track, queue_item_id=None)
 
         if self.autoplay_enabled and self.autoplay_remaining is not None:
             self.autoplay_remaining -= 1
@@ -93,6 +95,21 @@ class SessionState:
                 self.disable_dj()
 
         return track
+
+    def start_playback(self, *, track: Track, queue_item_id: UUID | None) -> None:
+        self.now_playing = track
+        self.now_playing_queue_item_id = queue_item_id
+        self.now_playing_started_at = time.monotonic()
+
+        if self.autoplay_enabled and self.autoplay_remaining is not None:
+            self.autoplay_remaining -= 1
+            if self.autoplay_remaining <= 0:
+                self.disable_autoplay()
+
+        if self.dj_enabled and self.dj_remaining is not None:
+            self.dj_remaining -= 1
+            if self.dj_remaining <= 0:
+                self.disable_dj()
 
 
 class SessionManager:

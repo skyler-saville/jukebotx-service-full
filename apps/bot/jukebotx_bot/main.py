@@ -10,10 +10,15 @@ from discord.ext import commands
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
-from jukebotx_bot.discord.session import SessionManager, Track
+from jukebotx_bot.discord.session import SessionManager
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
+from jukebotx_core.ports.repositories import QueueItemCreate, TrackUpsert
+from jukebotx_core.use_cases.clear_queue import ClearQueue
+from jukebotx_core.use_cases.get_next_track import GetNextTrack
+from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
+from jukebotx_core.use_cases.mark_track_played import MarkTrackPlayed
 from jukebotx_infra.db import async_session_factory, init_db
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
@@ -38,6 +43,11 @@ class BotDeps:
     ingest_use_case: IngestSunoLink
     audio_manager: AudioControllerManager
     playlist_client: HttpxSunoPlaylistClient
+    queue_repo: PostgresQueueRepository
+    track_repo: PostgresTrackRepository
+    queue_preview_use_case: GetQueuePreview
+    clear_queue_use_case: ClearQueue
+    mark_track_played_use_case: MarkTrackPlayed
 
 
 class JukeBot(commands.Bot):
@@ -197,17 +207,15 @@ class JukeBot(commands.Bot):
                     logging.warning("Skipping Suno URL without mp3_url: %s", url)
                     continue
 
-                track = Track(
-                    audio_url=result.mp3_url,
-                    page_url=result.suno_url,
-                    title=result.track_title or url,
-                    artist_display=result.artist_display,
-                    media_url=result.media_url,
-                    requester_id=message.author.id,
-                    requester_name=getattr(message.author, "display_name", "unknown"),
+                await self.deps.queue_repo.enqueue(
+                    QueueItemCreate(
+                        guild_id=message.guild.id,
+                        track_id=result.track_id,
+                        requested_by=message.author.id,
+                    )
                 )
-                session.queue.append(track)
-                session.per_user_counts[track.requester_id] = session.per_user_counts.get(track.requester_id, 0) + 1
+                requester_id = message.author.id
+                session.per_user_counts[requester_id] = session.per_user_counts.get(requester_id, 0) + 1
 
 
             if added_any:
@@ -370,6 +378,7 @@ class JukeBot(commands.Bot):
                 page_url = item.suno_track_url
                 artist_display = None
                 media_url = None
+                track_id = None
 
                 ingest_url = item.suno_track_url or item.mp3_url
                 if ingest_url is not None:
@@ -386,6 +395,7 @@ class JukeBot(commands.Bot):
                     except SunoScrapeError as exc:
                         logging.warning("Failed to ingest Suno URL %s: %s", ingest_url, exc)
                     else:
+                        track_id = ingest_result.track_id
                         if ingest_result.track_title:
                             track_title = ingest_result.track_title
                         if ingest_result.mp3_url:
@@ -393,17 +403,32 @@ class JukeBot(commands.Bot):
                         page_url = ingest_result.suno_url
                         artist_display = ingest_result.artist_display
                         media_url = ingest_result.media_url
+                if audio_url is None:
+                    logging.warning("Skipping playlist item without audio_url: %s", display_url)
+                    continue
 
-                track = Track(
-                    audio_url=audio_url,
-                    page_url=page_url,
-                    title=track_title,
-                    artist_display=artist_display,
-                    media_url=media_url,
-                    requester_id=ctx.author.id,
-                    requester_name=ctx.author.display_name,
+                if track_id is None:
+                    track = await self.deps.track_repo.upsert(
+                        TrackUpsert(
+                            suno_url=page_url or audio_url,
+                            title=track_title,
+                            artist_display=artist_display,
+                            artist_username=None,
+                            lyrics=None,
+                            image_url=None,
+                            video_url=media_url,
+                            mp3_url=audio_url,
+                        )
+                    )
+                    track_id = track.id
+
+                await self.deps.queue_repo.enqueue(
+                    QueueItemCreate(
+                        guild_id=ctx.guild.id,
+                        track_id=track_id,
+                        requested_by=user_id,
+                    )
                 )
-                session.queue.append(track)
                 session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
 
             session.submissions_open = False
@@ -426,13 +451,24 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
             lines: list[str] = []
 
-            if session.queue:
+            preview = await self.deps.queue_preview_use_case.execute(
+                guild_id=ctx.guild.id,
+                limit=5,
+            )
+            if preview.items:
                 lines.append("Up next:")
-                for idx, track in enumerate(session.queue[:5], start=1):
-                    lines.append(f"{idx}. {track.title} (requested by {track.requester_name})")
+                for idx, item in enumerate(preview.items, start=1):
+                    try:
+                        track = await self.deps.track_repo.get_by_id(item.track_id)
+                        title = track.title or track.suno_url
+                    except KeyError:
+                        title = str(item.track_id)
+
+                    member = ctx.guild.get_member(item.requested_by)
+                    requester_name = member.display_name if member else f"<@{item.requested_by}>"
+                    lines.append(f"{idx}. {title} (requested by {requester_name})")
             else:
                 lines.append("Queue is empty.")
 
@@ -465,7 +501,11 @@ class JukeBot(commands.Bot):
                 await ctx.send(f"Already playing: {session.now_playing.title}. Use ;n to skip.")
                 return
 
-            if not session.queue:
+            preview = await self.deps.queue_preview_use_case.execute(
+                guild_id=ctx.guild.id,
+                limit=1,
+            )
+            if not preview.items:
                 await ctx.send("Queue is empty. Use ;playlist <url>.")
                 return
 
@@ -533,6 +573,7 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            await self.deps.clear_queue_use_case.execute(guild_id=ctx.guild.id)
             session.queue.clear()
             await ctx.send("Queue cleared.")
 
@@ -546,13 +587,33 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
-            if index < 1 or index > len(session.queue):
+            if index < 1:
                 await ctx.send("Invalid queue index.")
                 return
 
-            track = session.queue.pop(index - 1)
-            await ctx.send(f"Removed: {track.title} (requested by {track.requester_name}).")
+            preview = await self.deps.queue_preview_use_case.execute(
+                guild_id=ctx.guild.id,
+                limit=index,
+            )
+            if index > len(preview.items):
+                await ctx.send("Invalid queue index.")
+                return
+
+            item = preview.items[index - 1]
+            try:
+                track = await self.deps.track_repo.get_by_id(item.track_id)
+                title = track.title or track.suno_url
+            except KeyError:
+                title = str(item.track_id)
+
+            await self.deps.mark_track_played_use_case.execute(
+                guild_id=ctx.guild.id,
+                queue_item_id=item.id,
+            )
+
+            member = ctx.guild.get_member(item.requested_by)
+            requester_name = member.display_name if member else f"<@{item.requested_by}>"
+            await ctx.send(f"Removed: {title} (requested by {requester_name}).")
 
         @self.command(name="limit")
         async def limit(ctx: commands.Context, limit_value: int) -> None:
@@ -657,16 +718,31 @@ def build_bot() -> JukeBot:
     intents = discord.Intents.default()
     intents.message_content = True  # required for prefix commands
 
+    queue_repo = PostgresQueueRepository(async_session_factory)
+    track_repo = PostgresTrackRepository(async_session_factory)
+    submission_repo = PostgresSubmissionRepository(async_session_factory)
+
+    get_next_track_use_case = GetNextTrack(queue_repo=queue_repo, track_repo=track_repo)
+    mark_track_played_use_case = MarkTrackPlayed(queue_repo=queue_repo)
+
     deps = BotDeps(
         session_manager=SessionManager(),
-        audio_manager=AudioControllerManager(),
+        audio_manager=AudioControllerManager(
+            get_next_track=get_next_track_use_case,
+            mark_track_played=mark_track_played_use_case,
+        ),
         ingest_use_case=IngestSunoLink(
             suno_client=HttpxSunoClient(),
-            track_repo=PostgresTrackRepository(async_session_factory),
-            submission_repo=PostgresSubmissionRepository(async_session_factory),
-            queue_repo=PostgresQueueRepository(async_session_factory),
+            track_repo=track_repo,
+            submission_repo=submission_repo,
+            queue_repo=queue_repo,
         ),
         playlist_client=HttpxSunoPlaylistClient(),
+        queue_repo=queue_repo,
+        track_repo=track_repo,
+        queue_preview_use_case=GetQueuePreview(queue_repo=queue_repo),
+        clear_queue_use_case=ClearQueue(queue_repo=queue_repo),
+        mark_track_played_use_case=mark_track_played_use_case,
     )
 
     return JukeBot(

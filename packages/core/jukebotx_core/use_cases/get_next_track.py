@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from uuid import UUID
 
 from jukebotx_core.ports.repositories import QueueItem, QueueRepository, Track, TrackRepository
 
 
 @dataclass(frozen=True)
 class NextTrackResult:
-    queue_item_id: UUID
+    queue_item: QueueItem
     track: Track
 
 
@@ -27,8 +26,5 @@ class GetNextTrack:
         if qi is None:
             return None
 
-        # We need a way to load by track_id; simplest is add a method, but
-        # we can also add it later. For now, assume track_repo can resolve URL-only.
-        # If you haven't implemented get_by_id yet, add it to the port and repos.
-        track = await self._track_repo.get_by_id(qi.track_id)  # type: ignore[attr-defined]
-        return NextTrackResult(queue_item_id=qi.id, track=track)
+        track = await self._track_repo.get_by_id(qi.track_id)
+        return NextTrackResult(queue_item=qi, track=track)

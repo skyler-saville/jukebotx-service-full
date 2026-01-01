@@ -10,15 +10,26 @@ import discord
 
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
+from jukebotx_core.use_cases.get_next_track import GetNextTrack
+from jukebotx_core.use_cases.mark_track_played import MarkTrackPlayed
 
 
 logger = logging.getLogger(__name__)
 
 
 class GuildAudioController:
-    def __init__(self, guild_id: int, session: SessionState) -> None:
+    def __init__(
+        self,
+        guild_id: int,
+        session: SessionState,
+        *,
+        get_next_track: GetNextTrack,
+        mark_track_played: MarkTrackPlayed,
+    ) -> None:
         self.guild_id = guild_id
         self.session = session
+        self._get_next_track = get_next_track
+        self._mark_track_played = mark_track_played
         self._lock = asyncio.Lock()
         self._current_source: Optional[discord.FFmpegPCMAudio] = None
         self._stderr_thread: Optional[threading.Thread] = None
@@ -29,37 +40,67 @@ class GuildAudioController:
             if voice_client.is_playing() or voice_client.is_paused():
                 return None
 
-            track = self.session.start_next_track()
-            if track is None:
-                return None
-
-            try:
-                source = self._build_source(track.audio_url)
-            except ValueError as exc:
-                logger.error("Refusing to play invalid audio URL for guild %s: %s", self.guild_id, exc)
-                self.session.stop_playback()
-                return None
-            self._current_source = source
-
             if self._loop is None:
                 self._loop = asyncio.get_running_loop()
 
-            def _after_playback(error: Exception | None, *, current_source=source) -> None:
-                if self._loop is None:
-                    return
-                asyncio.run_coroutine_threadsafe(
-                    self._on_track_end(voice_client, current_source, error),
-                    self._loop,
+            while True:
+                next_result = await self._get_next_track.execute(guild_id=self.guild_id)
+                if next_result is None:
+                    self.session.stop_playback()
+                    return None
+
+                if not next_result.track.mp3_url:
+                    logger.warning(
+                        "Skipping queue item %s in guild %s: missing mp3_url",
+                        next_result.queue_item.id,
+                        self.guild_id,
+                    )
+                    await self._mark_track_played.execute(
+                        guild_id=self.guild_id,
+                        queue_item_id=next_result.queue_item.id,
+                    )
+                    continue
+
+                track = Track(
+                    audio_url=next_result.track.mp3_url,
+                    page_url=next_result.track.suno_url,
+                    title=next_result.track.title or next_result.track.suno_url,
+                    artist_display=next_result.track.artist_display,
+                    media_url=next_result.track.video_url or next_result.track.image_url,
+                    requester_id=next_result.queue_item.requested_by,
+                    requester_name=f"<@{next_result.queue_item.requested_by}>",
                 )
 
-            voice_client.play(source, after=_after_playback)
-            return track
+                try:
+                    source = self._build_source(track.audio_url)
+                except ValueError as exc:
+                    logger.error("Refusing to play invalid audio URL for guild %s: %s", self.guild_id, exc)
+                    await self._mark_track_played.execute(
+                        guild_id=self.guild_id,
+                        queue_item_id=next_result.queue_item.id,
+                    )
+                    continue
+
+                self._current_source = source
+                self.session.start_playback(track=track, queue_item_id=next_result.queue_item.id)
+
+                def _after_playback(error: Exception | None, *, current_source=source) -> None:
+                    if self._loop is None:
+                        return
+                    asyncio.run_coroutine_threadsafe(
+                        self._on_track_end(voice_client, current_source, error),
+                        self._loop,
+                    )
+
+                voice_client.play(source, after=_after_playback)
+                return track
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
         async with self._lock:
             if voice_client.is_playing() or voice_client.is_paused():
                 voice_client.stop()
             await self._cleanup_ffmpeg()
+            await self._mark_now_playing_played()
             self.session.stop_playback()
 
     async def skip(self, voice_client: discord.VoiceClient) -> Track | None:
@@ -79,15 +120,15 @@ class GuildAudioController:
             if self._current_source is not source:
                 return
             await self._cleanup_ffmpeg()
+            await self._mark_now_playing_played()
             self.session.stop_playback()
 
-        if (self.session.autoplay_enabled or self.session.dj_enabled) and self.session.queue:
+        if self.session.autoplay_enabled or self.session.dj_enabled:
             logger.info(
-                "Autoplay/DJ active for guild %s. autoplay_enabled=%s dj_enabled=%s queue_size=%s",
+                "Autoplay/DJ active for guild %s. autoplay_enabled=%s dj_enabled=%s",
                 self.guild_id,
                 self.session.autoplay_enabled,
                 self.session.dj_enabled,
-                len(self.session.queue),
             )
             started = await self.play_next(voice_client)
             if started is not None:
@@ -191,12 +232,31 @@ class GuildAudioController:
 
         self._current_source = None
 
+    async def _mark_now_playing_played(self) -> None:
+        queue_item_id = self.session.now_playing_queue_item_id
+        if queue_item_id is None:
+            return
+        try:
+            await self._mark_track_played.execute(
+                guild_id=self.guild_id,
+                queue_item_id=queue_item_id,
+            )
+        except KeyError as exc:
+            logger.warning("Failed to mark queue item as played in guild %s: %s", self.guild_id, exc)
+
 
 class AudioControllerManager:
-    def __init__(self) -> None:
+    def __init__(self, *, get_next_track: GetNextTrack, mark_track_played: MarkTrackPlayed) -> None:
         self._controllers: dict[int, GuildAudioController] = {}
+        self._get_next_track = get_next_track
+        self._mark_track_played = mark_track_played
 
     def for_guild(self, guild_id: int, session: SessionState) -> GuildAudioController:
         if guild_id not in self._controllers:
-            self._controllers[guild_id] = GuildAudioController(guild_id, session)
+            self._controllers[guild_id] = GuildAudioController(
+                guild_id,
+                session,
+                get_next_track=self._get_next_track,
+                mark_track_played=self._mark_track_played,
+            )
         return self._controllers[guild_id]

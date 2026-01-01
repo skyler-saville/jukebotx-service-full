@@ -85,6 +85,9 @@ class TrackRepository:
     async def get_by_suno_url(self, suno_url: str) -> Track | None:
         raise NotImplementedError
 
+    async def get_by_id(self, track_id: UUID) -> Track:
+        raise NotImplementedError
+
     async def upsert(self, data: TrackUpsert) -> Track:
         raise NotImplementedError
 
