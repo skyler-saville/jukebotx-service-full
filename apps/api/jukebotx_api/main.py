@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+import asyncio
+from uuid import UUID
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
@@ -16,9 +19,47 @@ from jukebotx_api.auth import (
     require_session,
     validate_state_token,
 )
+from jukebotx_api.schemas import (
+    NextQueueItemResponse,
+    QueueItemSummary,
+    QueuePreviewResponse,
+    SessionTrackResponse,
+    TrackSummary,
+)
 from jukebotx_api.settings import ApiSettings, load_api_settings
+from jukebotx_core.ports.repositories import Track
+from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
+from jukebotx_infra.db import async_session_factory
+from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
+from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
+from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 
 app = FastAPI(title="JukeBotx API")
+
+
+def get_queue_repo() -> PostgresQueueRepository:
+    return PostgresQueueRepository(async_session_factory)
+
+
+def get_track_repo() -> PostgresTrackRepository:
+    return PostgresTrackRepository(async_session_factory)
+
+
+def get_submission_repo() -> PostgresSubmissionRepository:
+    return PostgresSubmissionRepository(async_session_factory)
+
+
+def ensure_guild_access(session: SessionData, guild_id: int) -> None:
+    if str(guild_id) not in session.guild_ids:
+        raise HTTPException(status_code=403, detail="Forbidden for this guild.")
+
+
+async def require_track(track_repo: PostgresTrackRepository, track_id: UUID) -> Track:
+    try:
+        return await track_repo.get_by_id(track_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
@@ -94,3 +135,88 @@ async def auth_me(session: SessionData = Depends(require_session)) -> dict[str, 
         "display_name": session.display_name,
         "avatar": session.avatar or "",
     }
+
+
+@app.get("/guilds/{guild_id}/queue", response_model=QueuePreviewResponse)
+async def get_queue_preview(
+    guild_id: int,
+    limit: int = 10,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+) -> QueuePreviewResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = GetQueuePreview(queue_repo=queue_repo)
+    result = await use_case.execute(guild_id=guild_id, limit=limit)
+    tracks = await asyncio.gather(*(require_track(track_repo, item.track_id) for item in result.items))
+    items = [
+        QueueItemSummary(
+            id=item.id,
+            position=item.position,
+            status=item.status,
+            requested_by=item.requested_by,
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+            track=TrackSummary.model_validate(track),
+        )
+        for item, track in zip(result.items, tracks)
+    ]
+    return QueuePreviewResponse(items=items)
+
+
+@app.get("/guilds/{guild_id}/queue/next", response_model=NextQueueItemResponse)
+async def get_next_queue_item(
+    guild_id: int,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+) -> NextQueueItemResponse:
+    ensure_guild_access(session, guild_id)
+    queue_item = await queue_repo.get_next_unplayed(guild_id=guild_id)
+    if queue_item is None:
+        return NextQueueItemResponse(queue_item=None)
+    track = await require_track(track_repo, queue_item.track_id)
+    queue_item = QueueItemSummary(
+        id=queue_item.id,
+        position=queue_item.position,
+        status=queue_item.status,
+        requested_by=queue_item.requested_by,
+        created_at=queue_item.created_at,
+        updated_at=queue_item.updated_at,
+        track=TrackSummary.model_validate(track),
+    )
+    return NextQueueItemResponse(queue_item=queue_item)
+
+
+@app.get("/guilds/{guild_id}/channels/{channel_id}/session/tracks", response_model=list[SessionTrackResponse])
+async def list_session_tracks(
+    guild_id: int,
+    channel_id: int,
+    session: SessionData = Depends(require_session),
+    submission_repo: PostgresSubmissionRepository = Depends(get_submission_repo),
+) -> list[SessionTrackResponse]:
+    ensure_guild_access(session, guild_id)
+    tracks = await submission_repo.list_tracks_for_channel(guild_id=guild_id, channel_id=channel_id)
+    return [SessionTrackResponse.model_validate(track) for track in tracks]
+
+
+@app.get("/tracks/{track_id}", response_model=TrackSummary)
+async def get_track(
+    track_id: UUID,
+    session: SessionData = Depends(require_session),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+) -> TrackSummary:
+    track = await require_track(track_repo, track_id)
+    return TrackSummary.model_validate(track)
+
+
+@app.get("/tracks/{track_id}/audio")
+async def get_track_audio(
+    track_id: UUID,
+    session: SessionData = Depends(require_session),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+) -> RedirectResponse:
+    track = await require_track(track_repo, track_id)
+    if track.mp3_url is None:
+        raise HTTPException(status_code=404, detail="Track audio not available.")
+    return RedirectResponse(url=track.mp3_url)

@@ -43,6 +43,7 @@ class SubmissionTrackInfo:
     """
     Track details joined to a submission for setlist exports.
     """
+    track_id: UUID
     artist_display: str | None
     title: str | None
     suno_url: str
