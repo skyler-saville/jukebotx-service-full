@@ -26,6 +26,7 @@ class BotSettings(BaseSettings):
         default=None, alias="JAM_SESSION_CHANNEL_ID"
     )
     jam_session_role_id: int | None = Field(default=None, alias="JAM_SESSION_ROLE_ID")
+    web_base_url: str | None = Field(default=None, alias="WEB_BASE_URL")
 
     # Pydantic v2 configuration
     model_config = SettingsConfigDict(
