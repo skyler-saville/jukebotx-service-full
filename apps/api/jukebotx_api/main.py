@@ -274,9 +274,11 @@ async def get_track_opus(
     if track.mp3_url is None:
         raise HTTPException(status_code=404, detail="Track audio not available.")
 
-    opus_path = opus_cache.cache_path(track_id=track_id)
-    if opus_path.exists() and opus_cache.is_fresh(opus_path):
-        return FileResponse(opus_path, media_type="audio/opus", filename=f"{track_id}.opus")
+    if track.opus_status == "completed":
+        opus_path_value = track.opus_path or str(opus_cache.cache_path(track_id=track_id))
+        opus_path = Path(opus_path_value)
+        if opus_path.exists():
+            return FileResponse(opus_path, media_type="audio/opus", filename=f"{track_id}.opus")
 
     await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
     return RedirectResponse(url=track.mp3_url)
@@ -294,9 +296,13 @@ async def get_track_opus_status(
     if track.mp3_url is None:
         raise HTTPException(status_code=404, detail="Track audio not available.")
 
-    opus_path = opus_cache.cache_path(track_id=track_id)
-    if opus_path.exists() and opus_cache.is_fresh(opus_path):
-        return OpusStatusResponse(track_id=track_id, ready=True, status="ready")
+    if track.opus_status == "completed":
+        opus_path_value = track.opus_path or str(opus_cache.cache_path(track_id=track_id))
+        opus_path = Path(opus_path_value)
+        if opus_path.exists():
+            return OpusStatusResponse(track_id=track_id, ready=True, status="ready")
+    if track.opus_status == "failed":
+        return OpusStatusResponse(track_id=track_id, ready=False, status="failed")
 
     job = await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
     return OpusStatusResponse(track_id=track_id, ready=False, status=job.status)

@@ -20,6 +20,10 @@ class Track:
     image_url: str | None
     video_url: str | None
     mp3_url: str | None
+    opus_url: str | None
+    opus_path: str | None
+    opus_status: str | None
+    opus_transcoded_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -75,6 +79,10 @@ class TrackUpsert:
     image_url: str | None
     video_url: str | None
     mp3_url: str | None
+    opus_url: str | None = None
+    opus_path: str | None = None
+    opus_status: str | None = None
+    opus_transcoded_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +123,17 @@ class TrackRepository:
         raise NotImplementedError
 
     async def upsert(self, data: TrackUpsert) -> Track:
+        raise NotImplementedError
+
+    async def update_opus_metadata(
+        self,
+        *,
+        track_id: UUID,
+        opus_url: str | None,
+        opus_path: str | None,
+        opus_status: str | None,
+        opus_transcoded_at: datetime | None,
+    ) -> Track:
         raise NotImplementedError
 
 
