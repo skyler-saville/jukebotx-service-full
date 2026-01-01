@@ -2,6 +2,8 @@ from pathlib import Path
 import sys
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.extend(
@@ -16,11 +18,30 @@ from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.main import select_playback_url
 from jukebotx_core.ports.suno_client import SunoTrackData
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
-from jukebotx_infra.repos.memory import (
-    InMemoryQueueRepository,
-    InMemorySubmissionRepository,
-    InMemoryTrackRepository,
-)
+from jukebotx_infra.db.models import Base
+from jukebotx_infra.db.session import DATABASE_URL
+from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
+from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
+from jukebotx_infra.repos.track_repo import PostgresTrackRepository
+
+
+@pytest.fixture(scope="session")
+async def async_session_factory() -> async_sessionmaker:
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+async def cleanup_db(async_session_factory: async_sessionmaker) -> None:
+    yield
+    async with async_session_factory() as session:
+        await session.execute(
+            text("TRUNCATE TABLE queue_items, submissions, tracks RESTART IDENTITY CASCADE")
+        )
+        await session.commit()
 
 
 class FakeSunoClient:
@@ -66,12 +87,14 @@ def test_select_playback_url_falls_back_to_suno_url() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ingest_suno_link_detects_duplicates_per_guild() -> None:
+async def test_ingest_suno_link_detects_duplicates_per_guild(
+    async_session_factory: async_sessionmaker,
+) -> None:
     ingest = IngestSunoLink(
         suno_client=FakeSunoClient(),
-        track_repo=InMemoryTrackRepository(),
-        submission_repo=InMemorySubmissionRepository(),
-        queue_repo=InMemoryQueueRepository(),
+        track_repo=PostgresTrackRepository(async_session_factory),
+        submission_repo=PostgresSubmissionRepository(async_session_factory),
+        queue_repo=PostgresQueueRepository(async_session_factory),
     )
 
     input_data = IngestSunoLinkInput(
