@@ -116,6 +116,6 @@ class IngestSunoLink:
             track_title=track.title,
             artist_display=track.artist_display,
             mp3_url=track.mp3_url,
-            media_url=track.video_url or track.image_url,
+            media_url=track.image_url or track.video_url,
             queued=queued,
         )
