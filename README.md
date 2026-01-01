@@ -181,6 +181,8 @@ These names may evolve, but the usual suspects are:
 * `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — used by Docker Compose
 * `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI` — OAuth config for the API
 * `API_SESSION_SECRET`, `API_SESSION_TTL_SECONDS` — cookie signing + TTL for OAuth sessions
+* `OPUS_CACHE_DIR`, `OPUS_CACHE_TTL_SECONDS` — local Opus cache location + TTL (API)
+* `OPUS_API_BASE_URL` — base URL for the bot to request cached Opus audio (e.g., `http://localhost:8001`)
 
 > Do not commit `.env`. The repo should ignore it.
 
@@ -255,6 +257,8 @@ unless otherwise noted.
 * `GET /guilds/{guild_id}/channels/{channel_id}/session/tracks` — tracks submitted in a session channel.
 * `GET /tracks/{track_id}` — track metadata by ID.
 * `GET /tracks/{track_id}/audio` — redirects to the track MP3 URL (404 if missing).
+* `GET /tracks/{track_id}/opus` — serves cached Opus audio for the track. Cached files are stored at
+  `static/opus/{track_id}.opus` for up to `OPUS_CACHE_TTL_SECONDS` seconds before being re-transcoded.
 
 ### Auth requirements
 

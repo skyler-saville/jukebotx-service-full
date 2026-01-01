@@ -1,10 +1,11 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -30,6 +31,7 @@ from jukebotx_api.schemas import (
     SessionTrackResponse,
     TrackSummary,
 )
+from jukebotx_api.opus_cache import OpusCacheService, OpusTranscodeError
 from jukebotx_api.settings import ApiSettings, load_api_settings
 from jukebotx_core.ports.repositories import Track
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
@@ -43,6 +45,7 @@ BASE_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="JukeBotx API")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+logger = logging.getLogger(__name__)
 
 
 def get_queue_repo() -> PostgresQueueRepository:
@@ -55,6 +58,13 @@ def get_track_repo() -> PostgresTrackRepository:
 
 def get_submission_repo() -> PostgresSubmissionRepository:
     return PostgresSubmissionRepository(async_session_factory)
+
+
+def get_opus_cache_service(settings: ApiSettings = Depends(load_api_settings)) -> OpusCacheService:
+    cache_dir = Path(settings.opus_cache_dir)
+    if not cache_dir.is_absolute():
+        cache_dir = BASE_DIR / cache_dir
+    return OpusCacheService(cache_dir=cache_dir, ttl_seconds=settings.opus_cache_ttl_seconds)
 
 
 def ensure_guild_access(session: SessionData, guild_id: int) -> None:
@@ -244,3 +254,21 @@ async def get_track_audio(
     if track.mp3_url is None:
         raise HTTPException(status_code=404, detail="Track audio not available.")
     return RedirectResponse(url=track.mp3_url)
+
+
+@app.get("/tracks/{track_id}/opus")
+async def get_track_opus(
+    track_id: UUID,
+    session: SessionData = Depends(require_session),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    opus_cache: OpusCacheService = Depends(get_opus_cache_service),
+) -> FileResponse:
+    track = await require_track(track_repo, track_id)
+    if track.mp3_url is None:
+        raise HTTPException(status_code=404, detail="Track audio not available.")
+    try:
+        opus_path = await opus_cache.ensure_cached(track_id=track_id, mp3_url=track.mp3_url)
+    except OpusTranscodeError as exc:
+        logger.error("Failed to transcode track %s: %s", track_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to transcode audio.") from exc
+    return FileResponse(opus_path, media_type="audio/opus", filename=f"{track_id}.opus")
