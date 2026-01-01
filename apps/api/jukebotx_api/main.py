@@ -26,16 +26,18 @@ from jukebotx_api.auth import (
 )
 from jukebotx_api.schemas import (
     NextQueueItemResponse,
+    OpusStatusResponse,
     QueueItemSummary,
     QueuePreviewResponse,
     SessionTrackResponse,
     TrackSummary,
 )
-from jukebotx_api.opus_cache import OpusCacheService, OpusTranscodeError
+from jukebotx_infra.opus_cache import OpusCacheService
 from jukebotx_api.settings import ApiSettings, load_api_settings
-from jukebotx_core.ports.repositories import Track
+from jukebotx_core.ports.repositories import OpusJobCreate, Track
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
 from jukebotx_infra.db import async_session_factory
+from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
@@ -58,6 +60,10 @@ def get_track_repo() -> PostgresTrackRepository:
 
 def get_submission_repo() -> PostgresSubmissionRepository:
     return PostgresSubmissionRepository(async_session_factory)
+
+
+def get_opus_job_repo() -> PostgresOpusJobRepository:
+    return PostgresOpusJobRepository(async_session_factory)
 
 
 def get_opus_cache_service(settings: ApiSettings = Depends(load_api_settings)) -> OpusCacheService:
@@ -262,13 +268,35 @@ async def get_track_opus(
     session: SessionData = Depends(require_session),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
     opus_cache: OpusCacheService = Depends(get_opus_cache_service),
-) -> FileResponse:
+    opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
+) -> FileResponse | RedirectResponse:
     track = await require_track(track_repo, track_id)
     if track.mp3_url is None:
         raise HTTPException(status_code=404, detail="Track audio not available.")
-    try:
-        opus_path = await opus_cache.ensure_cached(track_id=track_id, mp3_url=track.mp3_url)
-    except OpusTranscodeError as exc:
-        logger.error("Failed to transcode track %s: %s", track_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to transcode audio.") from exc
-    return FileResponse(opus_path, media_type="audio/opus", filename=f"{track_id}.opus")
+
+    opus_path = opus_cache.cache_path(track_id=track_id)
+    if opus_path.exists() and opus_cache.is_fresh(opus_path):
+        return FileResponse(opus_path, media_type="audio/opus", filename=f"{track_id}.opus")
+
+    await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
+    return RedirectResponse(url=track.mp3_url)
+
+
+@app.get("/tracks/{track_id}/opus/status", response_model=OpusStatusResponse)
+async def get_track_opus_status(
+    track_id: UUID,
+    session: SessionData = Depends(require_session),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    opus_cache: OpusCacheService = Depends(get_opus_cache_service),
+    opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
+) -> OpusStatusResponse:
+    track = await require_track(track_repo, track_id)
+    if track.mp3_url is None:
+        raise HTTPException(status_code=404, detail="Track audio not available.")
+
+    opus_path = opus_cache.cache_path(track_id=track_id)
+    if opus_path.exists() and opus_cache.is_fresh(opus_path):
+        return OpusStatusResponse(track_id=track_id, ready=True, status="ready")
+
+    job = await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
+    return OpusStatusResponse(track_id=track_id, ready=False, status=job.status)
