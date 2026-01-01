@@ -1,10 +1,12 @@
-from datetime import datetime, timezone
-
 import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from jukebotx_api.auth import (
     SessionData,
@@ -12,10 +14,12 @@ from jukebotx_api.auth import (
     build_session_cookie,
     build_state_token,
     clear_session,
+    get_session_cookie,
     ensure_oauth_configured,
     exchange_code_for_token,
     fetch_user,
     fetch_user_guilds,
+    parse_session_cookie,
     require_session,
     validate_state_token,
 )
@@ -34,7 +38,11 @@ from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 
+BASE_DIR = Path(__file__).resolve().parent
+
 app = FastAPI(title="JukeBotx API")
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
 def get_queue_repo() -> PostgresQueueRepository:
@@ -64,6 +72,22 @@ async def require_track(track_repo: PostgresTrackRepository, track_id: UUID) -> 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/")
+async def index(request: Request, settings: ApiSettings = Depends(load_api_settings)):
+    session = None
+    token = get_session_cookie(request)
+    if token and settings.session_secret:
+        session = parse_session_cookie(token, settings.session_secret)
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "session": session,
+            "guild_ids": session.guild_ids if session else [],
+        },
+    )
 
 
 @app.get("/auth/discord/login")
