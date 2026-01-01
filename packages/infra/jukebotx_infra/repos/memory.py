@@ -48,6 +48,7 @@ class InMemoryTrackRepository(TrackRepository):
                 artist_display=data.artist_display or existing.artist_display,
                 artist_username=data.artist_username or existing.artist_username,
                 lyrics=data.lyrics or existing.lyrics,
+                gif_url=data.gif_url if data.gif_url is not None else existing.gif_url,
                 image_url=data.image_url or existing.image_url,
                 video_url=data.video_url or existing.video_url,
                 mp3_url=data.mp3_url or existing.mp3_url,
@@ -64,6 +65,7 @@ class InMemoryTrackRepository(TrackRepository):
             artist_display=data.artist_display,
             artist_username=data.artist_username,
             lyrics=data.lyrics,
+            gif_url=data.gif_url,
             image_url=data.image_url,
             video_url=data.video_url,
             mp3_url=data.mp3_url,
@@ -73,6 +75,14 @@ class InMemoryTrackRepository(TrackRepository):
         self._by_id[track_id] = track
         self._by_url[data.suno_url] = track_id
         return track
+
+    async def update_gif_url(self, *, track_id: UUID, gif_url: str | None) -> Track:
+        existing = self._by_id.get(track_id)
+        if existing is None:
+            raise KeyError(f"Track not found: {track_id}")
+        updated = replace(existing, gif_url=gif_url, updated_at=_now())
+        self._by_id[track_id] = updated
+        return updated
 
 
 class InMemorySubmissionRepository(SubmissionRepository):

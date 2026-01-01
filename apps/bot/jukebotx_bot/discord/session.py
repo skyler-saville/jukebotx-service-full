@@ -3,15 +3,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
+from uuid import UUID
 
 
 @dataclass
 class Track:
+    track_id: UUID | None
     audio_url: str
     page_url: str | None
     title: str
     artist_display: str | None
     media_url: str | None
+    gif_url: str | None
     requester_id: int
     requester_name: str
 
@@ -44,6 +47,15 @@ class SessionState:
         self.queue.clear()
         self.now_playing_channel_id = None
         self.stop_playback()
+
+    def collect_gif_cleanup(self) -> list[tuple[UUID, str]]:
+        items: list[tuple[UUID, str]] = []
+        for track in self.queue:
+            if track.gif_url and track.track_id:
+                items.append((track.track_id, track.gif_url))
+        if self.now_playing and self.now_playing.gif_url and self.now_playing.track_id:
+            items.append((self.now_playing.track_id, self.now_playing.gif_url))
+        return items
 
     def stop_playback(self) -> None:
         self.now_playing = None

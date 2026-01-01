@@ -16,6 +16,7 @@ sys.path.extend(
 
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.main import select_playback_url
+from jukebotx_core.ports.gif_generation_queue import GifCleanupItem, GifGenerationQueue, GifGenerationRequest
 from jukebotx_core.ports.suno_client import SunoTrackData
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
 from jukebotx_infra.db.models import Base
@@ -58,6 +59,17 @@ class FakeSunoClient:
         )
 
 
+class FakeGifQueue(GifGenerationQueue):
+    def __init__(self) -> None:
+        self.enqueued: list[GifGenerationRequest] = []
+
+    async def enqueue(self, request: GifGenerationRequest) -> None:
+        self.enqueued.append(request)
+
+    async def delete_generated_gifs(self, items: list[GifCleanupItem]) -> None:
+        return None
+
+
 def test_extract_suno_urls() -> None:
     content = "Check this https://suno.com/song/abc123. And https://app.suno.ai/song/def456"
     assert extract_suno_urls(content) == [
@@ -95,6 +107,7 @@ async def test_ingest_suno_link_detects_duplicates_per_guild(
         track_repo=PostgresTrackRepository(async_session_factory),
         submission_repo=PostgresSubmissionRepository(async_session_factory),
         queue_repo=PostgresQueueRepository(async_session_factory),
+        gif_queue=FakeGifQueue(),
     )
 
     input_data = IngestSunoLinkInput(

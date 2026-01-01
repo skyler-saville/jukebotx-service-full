@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
+from jukebotx_core.ports.gif_generation_queue import GifGenerationQueue, GifGenerationRequest
 from jukebotx_core.ports.repositories import (
     QueueItemCreate,
     QueueRepository,
@@ -27,10 +29,12 @@ class IngestSunoLinkInput:
 @dataclass(frozen=True)
 class IngestSunoLinkResult:
     is_duplicate_in_guild: bool
+    track_id: UUID
     suno_url: str
     track_title: str | None
     artist_display: str | None
     mp3_url: str | None
+    gif_url: str | None
     media_url: str | None
     queued: bool
 
@@ -58,11 +62,13 @@ class IngestSunoLink:
         track_repo: TrackRepository,
         submission_repo: SubmissionRepository,
         queue_repo: QueueRepository,
+        gif_queue: GifGenerationQueue,
     ) -> None:
         self._suno_client = suno_client
         self._track_repo = track_repo
         self._submission_repo = submission_repo
         self._queue_repo = queue_repo
+        self._gif_queue = gif_queue
 
     async def execute(self, data: IngestSunoLinkInput) -> IngestSunoLinkResult:
         fetched = await self._suno_client.fetch_track(data.suno_url)
@@ -74,11 +80,20 @@ class IngestSunoLink:
                 artist_display=fetched.artist_display,
                 artist_username=fetched.artist_username,
                 lyrics=fetched.lyrics,
+                gif_url=None,
                 image_url=fetched.image_url,
                 video_url=fetched.video_url,
                 mp3_url=fetched.mp3_url,
             )
         )
+
+        if fetched.video_url and not fetched.image_url and track.gif_url is None:
+            await self._gif_queue.enqueue(
+                GifGenerationRequest(
+                    track_id=track.id,
+                    video_url=fetched.video_url,
+                )
+            )
 
         # Guild-local duplicate logic (like your old "already shared" behavior)
         prior = await self._submission_repo.get_first_submission_for_track_in_guild(
@@ -112,10 +127,12 @@ class IngestSunoLink:
 
         return IngestSunoLinkResult(
             is_duplicate_in_guild=is_dup,
+            track_id=track.id,
             suno_url=track.suno_url,
             track_title=track.title,
             artist_display=track.artist_display,
             mp3_url=track.mp3_url,
-            media_url=track.image_url or track.video_url,
+            gif_url=track.gif_url,
+            media_url=track.gif_url or track.image_url or track.video_url,
             queued=queued,
         )

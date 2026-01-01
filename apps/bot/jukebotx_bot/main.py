@@ -18,8 +18,10 @@ from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionManager, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
+from jukebotx_core.ports.gif_generation_queue import GifCleanupItem, GifGenerationQueue
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
 from jukebotx_infra.db import async_session_factory, init_db
+from jukebotx_infra.gif_generation_queue import InProcessGifGenerationQueue
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
@@ -41,6 +43,7 @@ class BotDeps:
     """
     session_manager: SessionManager
     ingest_use_case: IngestSunoLink
+    gif_queue: GifGenerationQueue
     audio_manager: AudioControllerManager
     playlist_client: HttpxSunoPlaylistClient
     submission_repo: PostgresSubmissionRepository
@@ -238,11 +241,13 @@ class JukeBot(commands.Bot):
                     continue
 
                 track = Track(
+                    track_id=result.track_id,
                     audio_url=result.mp3_url,
                     page_url=result.suno_url,
                     title=result.track_title or url,
                     artist_display=result.artist_display,
                     media_url=result.media_url,
+                    gif_url=result.gif_url,
                     requester_id=message.author.id,
                     requester_name=getattr(message.author, "display_name", "unknown"),
                 )
@@ -308,6 +313,7 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            gif_cleanup = session.collect_gif_cleanup()
             session.reset()
 
             if ctx.voice_client is not None:
@@ -320,6 +326,13 @@ class JukeBot(commands.Bot):
                 guild_id=ctx.guild.id,
                 channel_id=ctx.channel.id,
             )
+            if gif_cleanup:
+                await self.deps.gif_queue.delete_generated_gifs(
+                    [
+                        GifCleanupItem(track_id=track_id, gif_url=gif_url)
+                        for track_id, gif_url in gif_cleanup
+                    ]
+                )
 
             await ctx.send("Left the voice channel. Session reset.")
 
@@ -478,6 +491,7 @@ class JukeBot(commands.Bot):
                 page_url = item.suno_track_url
                 artist_display = None
                 media_url = None
+                ingest_result = None
 
                 ingest_url = item.suno_track_url or item.mp3_url
                 if ingest_url is not None:
@@ -503,11 +517,13 @@ class JukeBot(commands.Bot):
                         media_url = ingest_result.media_url
 
                 track = Track(
+                    track_id=ingest_result.track_id if ingest_result else None,
                     audio_url=audio_url,
                     page_url=page_url,
                     title=track_title,
                     artist_display=artist_display,
                     media_url=media_url,
+                    gif_url=ingest_result.gif_url if ingest_result else None,
                     requester_id=ctx.author.id,
                     requester_name=ctx.author.display_name,
                 )
@@ -765,18 +781,25 @@ def build_bot() -> JukeBot:
     intents = discord.Intents.default()
     intents.message_content = True  # required for prefix commands
 
+    track_repo = PostgresTrackRepository(async_session_factory)
+    submission_repo = PostgresSubmissionRepository(async_session_factory)
+    queue_repo = PostgresQueueRepository(async_session_factory)
+    gif_queue = InProcessGifGenerationQueue(track_repo=track_repo)
+
     deps = BotDeps(
         session_manager=SessionManager(),
         audio_manager=AudioControllerManager(),
         ingest_use_case=IngestSunoLink(
             suno_client=HttpxSunoClient(),
-            track_repo=PostgresTrackRepository(async_session_factory),
-            submission_repo=PostgresSubmissionRepository(async_session_factory),
-            queue_repo=PostgresQueueRepository(async_session_factory),
+            track_repo=track_repo,
+            submission_repo=submission_repo,
+            queue_repo=queue_repo,
+            gif_queue=gif_queue,
         ),
+        gif_queue=gif_queue,
         playlist_client=HttpxSunoPlaylistClient(),
-        submission_repo=PostgresSubmissionRepository(async_session_factory),
-        queue_repo=PostgresQueueRepository(async_session_factory),
+        submission_repo=submission_repo,
+        queue_repo=queue_repo,
     )
 
     return JukeBot(

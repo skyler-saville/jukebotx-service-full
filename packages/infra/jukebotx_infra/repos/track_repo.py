@@ -24,6 +24,7 @@ def _to_domain(track: TrackModel) -> Track:
         artist_display=track.artist_display,
         artist_username=track.artist_username,
         lyrics=track.lyrics,
+        gif_url=track.gif_url,
         image_url=track.image_url,
         video_url=track.video_url,
         mp3_url=track.mp3_url,
@@ -56,6 +57,8 @@ class PostgresTrackRepository(TrackRepository):
                 existing.artist_display = data.artist_display or existing.artist_display
                 existing.artist_username = data.artist_username or existing.artist_username
                 existing.lyrics = data.lyrics or existing.lyrics
+                if data.gif_url is not None:
+                    existing.gif_url = data.gif_url
                 existing.image_url = data.image_url or existing.image_url
                 existing.video_url = data.video_url or existing.video_url
                 existing.mp3_url = data.mp3_url or existing.mp3_url
@@ -70,6 +73,7 @@ class PostgresTrackRepository(TrackRepository):
                 artist_display=data.artist_display,
                 artist_username=data.artist_username,
                 lyrics=data.lyrics,
+                gif_url=data.gif_url,
                 image_url=data.image_url,
                 video_url=data.video_url,
                 mp3_url=data.mp3_url,
@@ -87,4 +91,15 @@ class PostgresTrackRepository(TrackRepository):
             result = await session.get(TrackModel, track_id)
             if result is None:
                 raise KeyError(f"Track not found: {track_id}")
+            return _to_domain(result)
+
+    async def update_gif_url(self, *, track_id: UUID, gif_url: str | None) -> Track:
+        """Update the gif_url for a track."""
+        async with self._session_factory() as session:
+            result = await session.get(TrackModel, track_id)
+            if result is None:
+                raise KeyError(f"Track not found: {track_id}")
+            result.gif_url = gif_url
+            await session.commit()
+            await session.refresh(result)
             return _to_domain(result)

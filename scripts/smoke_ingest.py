@@ -4,6 +4,7 @@ import asyncio
 
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
 from jukebotx_infra.db import async_session_factory, init_db
+from jukebotx_infra.gif_generation_queue import InProcessGifGenerationQueue
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
@@ -16,12 +17,14 @@ async def main() -> None:
     tracks = PostgresTrackRepository(async_session_factory)
     submissions = PostgresSubmissionRepository(async_session_factory)
     queue = PostgresQueueRepository(async_session_factory)
+    gif_queue = InProcessGifGenerationQueue(track_repo=tracks)
 
     ingest = IngestSunoLink(
         suno_client=suno,
         track_repo=tracks,
         submission_repo=submissions,
         queue_repo=queue,
+        gif_queue=gif_queue,
     )
 
     url = "https://suno.com/..."  # replace

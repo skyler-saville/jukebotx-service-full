@@ -17,6 +17,7 @@ class Track:
     artist_display: str | None
     artist_username: str | None
     lyrics: str | None
+    gif_url: str | None
     image_url: str | None
     video_url: str | None
     mp3_url: str | None
@@ -71,6 +72,7 @@ class TrackUpsert:
     artist_display: str | None
     artist_username: str | None
     lyrics: str | None
+    gif_url: str | None
     image_url: str | None
     video_url: str | None
     mp3_url: str | None
@@ -96,7 +98,13 @@ class TrackRepository:
     async def get_by_suno_url(self, suno_url: str) -> Track | None:
         raise NotImplementedError
 
+    async def get_by_id(self, track_id: UUID) -> Track:
+        raise NotImplementedError
+
     async def upsert(self, data: TrackUpsert) -> Track:
+        raise NotImplementedError
+
+    async def update_gif_url(self, *, track_id: UUID, gif_url: str | None) -> Track:
         raise NotImplementedError
 
 
