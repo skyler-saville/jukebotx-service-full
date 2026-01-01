@@ -3,11 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from jukebotx_core.ports.repositories import Submission, SubmissionCreate, SubmissionRepository
+from jukebotx_core.ports.repositories import (
+    Submission,
+    SubmissionCreate,
+    SubmissionRepository,
+    SubmissionTrackInfo,
+)
 from jukebotx_infra.db.models import SubmissionModel
+from jukebotx_infra.db.models import TrackModel
 
 
 def _now() -> datetime:
@@ -66,3 +72,42 @@ class PostgresSubmissionRepository(SubmissionRepository):
             await session.commit()
             await session.refresh(created)
             return _to_domain(created)
+
+    async def list_tracks_for_channel(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+    ) -> list[SubmissionTrackInfo]:
+        """Fetch track info for submissions in a guild/channel."""
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(SubmissionModel, TrackModel)
+                .join(TrackModel, SubmissionModel.track_id == TrackModel.id)
+                .where(
+                    SubmissionModel.guild_id == guild_id,
+                    SubmissionModel.channel_id == channel_id,
+                )
+                .order_by(SubmissionModel.submitted_at.asc())
+            )
+            return [
+                SubmissionTrackInfo(
+                    artist_display=track.artist_display,
+                    title=track.title,
+                    suno_url=track.suno_url,
+                    mp3_url=track.mp3_url,
+                )
+                for _, track in rows.all()
+            ]
+
+    async def clear_for_channel(self, *, guild_id: int, channel_id: int) -> int:
+        """Remove all submissions for a guild/channel."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                delete(SubmissionModel).where(
+                    SubmissionModel.guild_id == guild_id,
+                    SubmissionModel.channel_id == channel_id,
+                )
+            )
+            await session.commit()
+            return result.rowcount or 0
