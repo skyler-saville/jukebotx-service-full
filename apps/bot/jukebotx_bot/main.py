@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+import math
 import os
 import re
 import tempfile
@@ -97,6 +98,20 @@ class JukeBot(commands.Bot):
     # Events
     # -----------------------------
     def _register_events(self) -> None:
+        async def _send_submission_feedback(message: discord.Message, content: str) -> None:
+            try:
+                await message.author.send(content)
+                return
+            except discord.Forbidden:
+                pass
+            except discord.HTTPException:
+                return
+
+            try:
+                await message.channel.send(f"{message.author.mention} {content}")
+            except discord.HTTPException:
+                return
+
         @self.event
         async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
             if isinstance(error, commands.CheckFailure):
@@ -171,10 +186,39 @@ class JukeBot(commands.Bot):
 
             added_any = False
             skipped_playlist = False
+            blocked_reason: str | None = None
+            limit_reached = False
+
+            session = self.deps.session_manager.for_guild(message.guild.id)
+            is_host = isinstance(message.author, discord.Member) and _is_mod(message.author)
+            user_id = message.author.id
+            remaining_slots: int | None = None
+
+            if not is_host:
+                if not session.submissions_open:
+                    blocked_reason = "Submissions are closed right now."
+                else:
+                    if session.per_user_limit is not None:
+                        current = session.per_user_counts.get(user_id, 0)
+                        remaining_slots = session.per_user_limit - current
+                        if remaining_slots <= 0:
+                            blocked_reason = "You have reached the submission limit for this session."
+                    if blocked_reason is None:
+                        cooldown_remaining = session.cooldown_remaining(user_id)
+                        if cooldown_remaining > 0:
+                            blocked_reason = (
+                                "You're on cooldown for another "
+                                f"{math.ceil(cooldown_remaining)}s before submitting again."
+                            )
             for url in urls:
                 if "https://suno.com/playlist/" in url:
                     skipped_playlist = True
                     continue
+                if blocked_reason is not None:
+                    continue
+                if remaining_slots is not None and remaining_slots <= 0:
+                    limit_reached = True
+                    break
                 try:
                     result = await self.deps.ingest_use_case.execute(
                         IngestSunoLinkInput(
@@ -187,16 +231,6 @@ class JukeBot(commands.Bot):
                     )
                 except SunoScrapeError as exc:
                     print(f"Failed to ingest Suno URL {url}: {exc}")
-                    continue
-
-                if not result.is_duplicate_in_guild:
-                    added_any = True
-                    
-                # inside on_message, after successful ingest and not duplicate
-                session = self.deps.session_manager.for_guild(message.guild.id)
-
-                # If you want to respect close/limit logic:
-                if not session.submissions_open:
                     continue
 
                 if not result.mp3_url:
@@ -214,13 +248,25 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[track.requester_id] = session.per_user_counts.get(track.requester_id, 0) + 1
+                added_any = True
+                if remaining_slots is not None:
+                    remaining_slots -= 1
 
 
             if added_any:
+                session.mark_submission(user_id)
                 try:
                     await message.add_reaction("🤘")
                 except discord.HTTPException:
                     pass
+            if blocked_reason is not None:
+                await _send_submission_feedback(message, blocked_reason)
+            elif limit_reached:
+                await _send_submission_feedback(
+                    message,
+                    "You have reached the submission limit for this session. "
+                    "Additional songs were not queued.",
+                )
 
             if skipped_playlist:
                 await message.channel.send("Playlist links aren’t auto-ingested. Use `;playlist <url>` instead.")
