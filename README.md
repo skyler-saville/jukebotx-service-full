@@ -23,6 +23,7 @@ This repo is set up so you can:
 
   * [Bot](#bot)
   * [API](#api)
+  * [API endpoints](#api-endpoints)
 * [Commands](#commands)
 * [Smoke tests](#smoke-tests)
 * [Development workflow](#development-workflow)
@@ -230,6 +231,38 @@ Or manually:
 PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
 poetry run uvicorn jukebotx_api.main:app --reload
 ```
+
+---
+
+## API endpoints
+
+The API currently exposes read-only queue/session endpoints plus Discord OAuth for
+authenticated access. All endpoints below require a valid `jukebotx_session` cookie
+unless otherwise noted.
+
+### Auth + session
+
+* `GET /healthz` — basic health check (no auth required).
+* `GET /auth/discord/login` — starts Discord OAuth flow (redirects to Discord).
+* `GET /auth/discord/callback` — OAuth callback (sets `jukebotx_session` cookie).
+* `POST /auth/logout` — clears session cookie and redirects to `/`.
+* `GET /auth/me` — returns the authenticated user profile payload.
+
+### Queue + tracks
+
+* `GET /guilds/{guild_id}/queue?limit=10` — queue preview for a guild.
+* `GET /guilds/{guild_id}/queue/next` — next unplayed queue item (if any).
+* `GET /guilds/{guild_id}/channels/{channel_id}/session/tracks` — tracks submitted in a session channel.
+* `GET /tracks/{track_id}` — track metadata by ID.
+* `GET /tracks/{track_id}/audio` — redirects to the track MP3 URL (404 if missing).
+
+### Auth requirements
+
+* The API expects Discord OAuth configuration to be present (`DISCORD_OAUTH_CLIENT_ID`,
+  `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI`,
+  `DISCORD_GUILD_ID`, `API_SESSION_SECRET`).
+* Requests are authorized against the guild IDs in the session payload; non-members
+  receive a `403`.
 
 ---
 
