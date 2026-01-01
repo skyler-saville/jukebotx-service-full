@@ -429,6 +429,30 @@ class JukeBot(commands.Bot):
             session.submissions_open = False
             await ctx.send("Submissions are closed.")
 
+        @self.command(name="web", aliases=["sessionurl"])
+        async def web(ctx: commands.Context) -> None:
+            if ctx.guild is None:
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if self.settings.web_base_url is None:
+                await ctx.send("Web UI base URL is not configured.")
+                return
+
+            base_url = self.settings.web_base_url.rstrip("/")
+            url = (
+                f"{base_url}/guilds/{ctx.guild.id}"
+                f"/channels/{ctx.channel.id}/session/tracks"
+            )
+
+            target_channel = ctx.channel
+            if self.settings.jam_session_channel_id is not None:
+                configured_channel = ctx.guild.get_channel(self.settings.jam_session_channel_id)
+                if isinstance(configured_channel, discord.abc.Messageable):
+                    target_channel = configured_channel
+
+            await target_channel.send(f"Session URL: {url}")
+
         @self.command(name="playlist")
         async def playlist(ctx: commands.Context, url: str) -> None:
             if ctx.guild is None or not isinstance(ctx.author, discord.Member):
