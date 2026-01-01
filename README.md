@@ -178,6 +178,8 @@ These names may evolve, but the usual suspects are:
 * `LOG_LEVEL` — e.g. `INFO`
 * `DATABASE_URL` — async SQLAlchemy DSN (defaults to local Postgres)
 * `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — used by Docker Compose
+* `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI` — OAuth config for the API
+* `API_SESSION_SECRET`, `API_SESSION_TTL_SECONDS` — cookie signing + TTL for OAuth sessions
 
 > Do not commit `.env`. The repo should ignore it.
 
