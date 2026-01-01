@@ -8,6 +8,7 @@ import time
 @dataclass
 class Track:
     audio_url: str
+    opus_url: str | None
     page_url: str | None
     title: str
     artist_display: str | None

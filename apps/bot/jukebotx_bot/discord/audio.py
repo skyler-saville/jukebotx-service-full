@@ -34,7 +34,7 @@ class GuildAudioController:
                 return None
 
             try:
-                source = self._build_source(track.audio_url)
+                source = self._build_source(track)
             except ValueError as exc:
                 logger.error("Refusing to play invalid audio URL for guild %s: %s", self.guild_id, exc)
                 self.session.stop_playback()
@@ -122,7 +122,8 @@ class GuildAudioController:
         embed = build_now_playing_embed(track)
         await channel.send(embed=embed)
 
-    def _build_source(self, url: str) -> discord.FFmpegPCMAudio:
+    def _build_source(self, track: Track) -> discord.FFmpegPCMAudio:
+        url = track.opus_url or track.audio_url
         self._assert_audio_url(url)
         source = discord.FFmpegPCMAudio(
             url,
@@ -135,11 +136,12 @@ class GuildAudioController:
 
     def _assert_audio_url(self, url: str) -> None:
         lowered = url.lower()
+        stripped = lowered.split("?", 1)[0]
         if not lowered.startswith("http"):
             raise ValueError(f"Audio URL must be http(s): {url}")
         if "suno.com/song/" in lowered or "suno.com/s/" in lowered:
             raise ValueError(f"Refusing to pass Suno page URL to ffmpeg: {url}")
-        if not (lowered.endswith(".mp3") or "cdn" in lowered):
+        if not (stripped.endswith(".mp3") or stripped.endswith(".opus") or stripped.endswith("/opus") or "cdn" in lowered):
             raise ValueError(f"Refusing to pass non-audio URL to ffmpeg: {url}")
 
     def _start_ffmpeg_logger(self, source: discord.FFmpegPCMAudio) -> None:

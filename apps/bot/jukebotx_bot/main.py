@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 from typing import Optional
+from uuid import UUID
 
 import discord
 from discord.ext import commands
@@ -93,6 +94,12 @@ class JukeBot(commands.Bot):
 
     def _get_audio(self, ctx: commands.Context) -> AudioControllerManager:
         return self.deps.audio_manager
+
+    def _build_opus_url(self, track_id: UUID | None) -> str | None:
+        if track_id is None or self.settings.opus_api_base_url is None:
+            return None
+        base_url = self.settings.opus_api_base_url.rstrip("/")
+        return f"{base_url}/tracks/{track_id}/opus"
 
     # -----------------------------
     # Events
@@ -237,8 +244,11 @@ class JukeBot(commands.Bot):
                     logging.warning("Skipping Suno URL without mp3_url: %s", url)
                     continue
 
+                opus_url = self._build_opus_url(result.track_id)
+
                 track = Track(
                     audio_url=result.mp3_url,
+                    opus_url=opus_url,
                     page_url=result.suno_url,
                     title=result.track_title or url,
                     artist_display=result.artist_display,
@@ -502,6 +512,7 @@ class JukeBot(commands.Bot):
                 page_url = item.suno_track_url
                 artist_display = None
                 media_url = None
+                opus_url = None
 
                 ingest_url = item.suno_track_url or item.mp3_url
                 if ingest_url is not None:
@@ -525,9 +536,11 @@ class JukeBot(commands.Bot):
                         page_url = ingest_result.suno_url
                         artist_display = ingest_result.artist_display
                         media_url = ingest_result.media_url
+                        opus_url = self._build_opus_url(ingest_result.track_id)
 
                 track = Track(
                     audio_url=audio_url,
+                    opus_url=opus_url,
                     page_url=page_url,
                     title=track_title,
                     artist_display=artist_display,

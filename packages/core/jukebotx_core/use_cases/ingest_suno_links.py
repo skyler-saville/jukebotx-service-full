@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from jukebotx_core.ports.repositories import (
     QueueItemCreate,
@@ -26,6 +27,7 @@ class IngestSunoLinkInput:
 
 @dataclass(frozen=True)
 class IngestSunoLinkResult:
+    track_id: UUID
     is_duplicate_in_guild: bool
     suno_url: str
     track_title: str | None
@@ -111,6 +113,7 @@ class IngestSunoLink:
             queued = True
 
         return IngestSunoLinkResult(
+            track_id=track.id,
             is_duplicate_in_guild=is_dup,
             suno_url=track.suno_url,
             track_title=track.title,

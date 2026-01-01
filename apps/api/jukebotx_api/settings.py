@@ -13,6 +13,8 @@ class ApiSettings:
     discord_required_guild_id: str
     session_secret: str
     session_ttl_seconds: int
+    opus_cache_dir: str
+    opus_cache_ttl_seconds: int
 
 
 def load_api_settings() -> ApiSettings:
@@ -24,4 +26,6 @@ def load_api_settings() -> ApiSettings:
         discord_required_guild_id=os.environ.get("DISCORD_GUILD_ID", ""),
         session_secret=os.environ.get("API_SESSION_SECRET", ""),
         session_ttl_seconds=int(os.environ.get("API_SESSION_TTL_SECONDS", "86400")),
+        opus_cache_dir=os.environ.get("OPUS_CACHE_DIR", "static/opus"),
+        opus_cache_ttl_seconds=int(os.environ.get("OPUS_CACHE_TTL_SECONDS", "604800")),
     )
