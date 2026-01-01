@@ -92,6 +92,7 @@ class PostgresSubmissionRepository(SubmissionRepository):
             )
             return [
                 SubmissionTrackInfo(
+                    track_id=track.id,
                     artist_display=track.artist_display,
                     title=track.title,
                     suno_url=track.suno_url,
