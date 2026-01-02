@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 
@@ -29,12 +30,16 @@ class OpusStorageService:
         self._client = None
         if self.is_enabled:
             session = boto3.session.Session()
+            client_config = None
+            if config.endpoint_url:
+                client_config = Config(s3={"addressing_style": "path"})
             self._client = session.client(
                 "s3",
                 region_name=config.region or None,
                 endpoint_url=config.endpoint_url or None,
                 aws_access_key_id=config.access_key_id or None,
                 aws_secret_access_key=config.secret_access_key or None,
+                config=client_config,
             )
 
     @property
