@@ -8,11 +8,13 @@ import math
 import os
 import re
 import tempfile
+import asyncio
 from typing import Optional
 from uuid import UUID
 
 import discord
 from discord.ext import commands
+import httpx
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
@@ -100,6 +102,16 @@ class JukeBot(commands.Bot):
             return None
         base_url = self.settings.opus_api_base_url.rstrip("/")
         return f"{base_url}/tracks/{track_id}/opus"
+
+    async def _prefetch_opus(self, track_id: UUID) -> None:
+        if self.settings.opus_api_base_url is None:
+            return
+        status_url = f"{self.settings.opus_api_base_url.rstrip('/')}/tracks/{track_id}/opus/status"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.get(status_url)
+        except Exception as exc:
+            logging.warning("Failed to prefetch opus status for %s: %s", track_id, exc)
 
     # -----------------------------
     # Events
@@ -258,6 +270,7 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[track.requester_id] = session.per_user_counts.get(track.requester_id, 0) + 1
+                asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
                 if remaining_slots is not None:
                     remaining_slots -= 1
@@ -513,6 +526,7 @@ class JukeBot(commands.Bot):
                 artist_display = None
                 media_url = None
                 opus_url = None
+                track_id: UUID | None = None
 
                 ingest_url = item.suno_track_url or item.mp3_url
                 if ingest_url is not None:
@@ -537,6 +551,7 @@ class JukeBot(commands.Bot):
                         artist_display = ingest_result.artist_display
                         media_url = ingest_result.media_url
                         opus_url = self._build_opus_url(ingest_result.track_id)
+                        track_id = ingest_result.track_id
 
                 track = Track(
                     audio_url=audio_url,
@@ -550,6 +565,8 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
+                if track_id is not None:
+                    asyncio.create_task(self._prefetch_opus(track_id))
 
             session.submissions_open = False
             await ctx.send(

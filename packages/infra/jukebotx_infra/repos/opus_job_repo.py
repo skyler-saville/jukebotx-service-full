@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import os
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -12,6 +13,11 @@ from jukebotx_infra.db.models import OpusJobModel
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _processing_timeout() -> timedelta:
+    seconds = int(os.getenv("OPUS_JOB_PROCESSING_TIMEOUT_SECONDS", "600"))
+    return timedelta(seconds=max(seconds, 1))
 
 
 def _to_domain(job: OpusJobModel) -> OpusJob:
@@ -51,7 +57,12 @@ class PostgresOpusJobRepository(OpusJobRepository):
                     await session.flush()
                     return _to_domain(job)
 
-                if job.status != "processing":
+                if job.status == "processing":
+                    if _now() - job.updated_at > _processing_timeout():
+                        job.status = "queued"
+                        job.error = None
+                        job.updated_at = _now()
+                else:
                     job.mp3_url = data.mp3_url
                     job.status = "queued"
                     job.error = None
@@ -61,9 +72,16 @@ class PostgresOpusJobRepository(OpusJobRepository):
     async def fetch_next_pending(self) -> OpusJob | None:
         async with self._session_factory() as session:
             async with session.begin():
+                stale_before = _now() - _processing_timeout()
                 result = await session.scalars(
                     select(OpusJobModel)
-                    .where(OpusJobModel.status == "queued")
+                    .where(
+                        (OpusJobModel.status == "queued")
+                        | (
+                            (OpusJobModel.status == "processing")
+                            & (OpusJobModel.updated_at < stale_before)
+                        )
+                    )
                     .order_by(OpusJobModel.created_at.asc())
                     .with_for_update(skip_locked=True)
                     .limit(1)

@@ -282,7 +282,6 @@ async def get_track_audio(
 @app.get("/tracks/{track_id}/opus", response_model=None)
 async def get_track_opus(
     track_id: UUID,
-    session: SessionData = Depends(require_session),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
     opus_cache: OpusCacheService = Depends(get_opus_cache_service),
     opus_storage: OpusStorageService = Depends(get_opus_storage_service),
@@ -312,7 +311,6 @@ async def get_track_opus(
 @app.get("/tracks/{track_id}/opus/status", response_model=OpusStatusResponse)
 async def get_track_opus_status(
     track_id: UUID,
-    session: SessionData = Depends(require_session),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
     opus_cache: OpusCacheService = Depends(get_opus_cache_service),
     opus_storage: OpusStorageService = Depends(get_opus_storage_service),

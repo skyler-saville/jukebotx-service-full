@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import logging
 from uuid import UUID
 
 import boto3
@@ -28,6 +29,7 @@ class OpusStorageService:
     def __init__(self, config: OpusStorageConfig) -> None:
         self._config = config
         self._client = None
+        self._logger = logging.getLogger(__name__)
         if self.is_enabled:
             session = boto3.session.Session()
             client_config = None
@@ -41,6 +43,7 @@ class OpusStorageService:
                 aws_secret_access_key=config.secret_access_key or None,
                 config=client_config,
             )
+            self._ensure_bucket()
 
     @property
     def is_enabled(self) -> bool:
@@ -57,6 +60,27 @@ class OpusStorageService:
         if not self._config.public_base_url:
             return None
         return f"{self._config.public_base_url.rstrip('/')}/{object_key}"
+
+    def _ensure_bucket(self) -> None:
+        if self._client is None:
+            return
+        try:
+            self._client.head_bucket(Bucket=self._config.bucket)
+            return
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code not in {"404", "NoSuchBucket"}:
+                self._logger.warning("Failed to check storage bucket: %s", exc)
+                return
+        params: dict[str, object] = {"Bucket": self._config.bucket}
+        if self._config.region and self._config.region != "us-east-1":
+            params["CreateBucketConfiguration"] = {
+                "LocationConstraint": self._config.region
+            }
+        try:
+            self._client.create_bucket(**params)
+        except ClientError as exc:
+            self._logger.warning("Failed to create storage bucket: %s", exc)
 
     def get_access_url(self, *, object_key: str) -> str:
         public_url = self.public_url(object_key=object_key)

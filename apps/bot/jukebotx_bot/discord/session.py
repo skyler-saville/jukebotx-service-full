@@ -15,6 +15,7 @@ class Track:
     media_url: str | None
     requester_id: int
     requester_name: str
+    duration_seconds: float | None = None
 
 
 @dataclass

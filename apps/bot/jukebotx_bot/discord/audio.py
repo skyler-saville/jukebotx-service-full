@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import subprocess
 import threading
 from typing import Optional
+
+import httpx
 
 import discord
 
@@ -13,6 +17,11 @@ from jukebotx_bot.discord.session import SessionState, Track
 
 
 logger = logging.getLogger(__name__)
+
+_OPUS_READY_TIMEOUT_SECONDS = float(os.getenv("OPUS_READY_TIMEOUT_SECONDS", "30"))
+_OPUS_READY_POLL_SECONDS = float(os.getenv("OPUS_READY_POLL_SECONDS", "2"))
+_FFPROBE_TIMEOUT_SECONDS = float(os.getenv("FFPROBE_TIMEOUT_SECONDS", "10"))
+_FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
 
 
 class GuildAudioController:
@@ -33,8 +42,12 @@ class GuildAudioController:
             if track is None:
                 return None
 
+            await self._wait_for_opus_ready(track)
+            playback_url = await self._resolve_playback_url(track)
+            track.duration_seconds = await self._probe_duration_seconds(playback_url)
+
             try:
-                source = self._build_source(track)
+                source = self._build_source(playback_url)
             except ValueError as exc:
                 logger.error("Refusing to play invalid audio URL for guild %s: %s", self.guild_id, exc)
                 self.session.stop_playback()
@@ -81,6 +94,8 @@ class GuildAudioController:
             await self._cleanup_ffmpeg()
             self.session.stop_playback()
 
+        self._log_track_end(error)
+
         if (self.session.autoplay_enabled or self.session.dj_enabled) and self.session.queue:
             logger.info(
                 "Autoplay/DJ active for guild %s. autoplay_enabled=%s dj_enabled=%s queue_size=%s",
@@ -111,7 +126,8 @@ class GuildAudioController:
             return
 
         channel = voice_client.guild.get_channel(channel_id)
-        if channel is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        can_send = channel is not None and callable(getattr(channel, "send", None))
+        if channel is None or not can_send:
             logger.info(
                 "Skipping now playing announcement for guild %s: channel not found or invalid (%s)",
                 self.guild_id,
@@ -121,6 +137,26 @@ class GuildAudioController:
 
         embed = build_now_playing_embed(track)
         await channel.send(embed=embed)
+
+    async def _wait_for_opus_ready(self, track: Track) -> None:
+        if not track.opus_url:
+            return
+        status_url = track.opus_url.rstrip("/") + "/status"
+        deadline = asyncio.get_running_loop().time() + _OPUS_READY_TIMEOUT_SECONDS
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while True:
+                try:
+                    resp = await client.get(status_url)
+                    if resp.status_code == 200:
+                        payload = resp.json()
+                        if payload.get("ready"):
+                            return
+                except Exception as exc:
+                    logger.warning("Failed to check Opus status for guild %s: %s", self.guild_id, exc)
+                    return
+                if asyncio.get_running_loop().time() >= deadline:
+                    return
+                await asyncio.sleep(_OPUS_READY_POLL_SECONDS)
 
     def _build_source(self, url: str) -> discord.FFmpegOpusAudio:
         self._assert_audio_url(url)
@@ -142,6 +178,79 @@ class GuildAudioController:
             raise ValueError(f"Refusing to pass Suno page URL to ffmpeg: {url}")
         if not (stripped.endswith(".mp3") or stripped.endswith(".opus") or stripped.endswith("/opus") or "cdn" in lowered):
             raise ValueError(f"Refusing to pass non-audio URL to ffmpeg: {url}")
+
+    async def _resolve_playback_url(self, track: Track) -> str:
+        url = track.opus_url or track.audio_url
+        if not url:
+            raise ValueError("Track is missing an audio URL")
+        if track.opus_url:
+            try:
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                    async with client.stream("GET", url) as resp:
+                        if resp.status_code >= 400:
+                            raise ValueError(f"Opus URL returned {resp.status_code}")
+                        return str(resp.url)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve opus URL for guild %s: %s. Falling back to MP3.",
+                    self.guild_id,
+                    exc,
+                )
+                if track.audio_url:
+                    return track.audio_url
+        return url
+
+    async def _probe_duration_seconds(self, url: str) -> float | None:
+        def _run_probe() -> float | None:
+            command = [
+                _FFPROBE_PATH,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "json",
+                url,
+            ]
+            try:
+                result = subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=_FFPROBE_TIMEOUT_SECONDS,
+                )
+                payload = json.loads(result.stdout or "{}")
+                duration = payload.get("format", {}).get("duration")
+                if duration is None:
+                    return None
+                return float(duration)
+            except Exception as exc:
+                logger.warning("ffprobe failed for guild %s: %s", self.guild_id, exc)
+                return None
+
+        return await asyncio.to_thread(_run_probe)
+
+    def _log_track_end(self, error: Exception | None) -> None:
+        current = self.session.now_playing
+        if current is None:
+            return
+        duration = current.duration_seconds
+        if duration:
+            logger.info(
+                "Track ended in guild %s: %s (%.1fs)%s",
+                self.guild_id,
+                current.title,
+                duration,
+                f" error={error}" if error else "",
+            )
+        else:
+            logger.info(
+                "Track ended in guild %s: %s%s",
+                self.guild_id,
+                current.title,
+                f" error={error}" if error else "",
+            )
 
     def _start_ffmpeg_logger(self, source: discord.FFmpegOpusAudio) -> None:
         process = getattr(source, "process", None)
