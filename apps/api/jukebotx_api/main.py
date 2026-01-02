@@ -279,7 +279,7 @@ async def get_track_audio(
     return RedirectResponse(url=track.mp3_url)
 
 
-@app.get("/tracks/{track_id}/opus")
+@app.get("/tracks/{track_id}/opus", response_model=None)
 async def get_track_opus(
     track_id: UUID,
     session: SessionData = Depends(require_session),
@@ -287,7 +287,7 @@ async def get_track_opus(
     opus_cache: OpusCacheService = Depends(get_opus_cache_service),
     opus_storage: OpusStorageService = Depends(get_opus_storage_service),
     opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
-) -> FileResponse | RedirectResponse:
+):
     track = await require_track(track_repo, track_id)
     if track.mp3_url is None:
         raise HTTPException(status_code=404, detail="Track audio not available.")
