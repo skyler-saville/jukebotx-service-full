@@ -183,6 +183,14 @@ These names may evolve, but the usual suspects are:
 * `API_SESSION_SECRET`, `API_SESSION_TTL_SECONDS` — cookie signing + TTL for OAuth sessions
 * `OPUS_CACHE_DIR`, `OPUS_CACHE_TTL_SECONDS` — local Opus cache location + TTL (API)
 * `OPUS_API_BASE_URL` — base URL for the bot to request cached Opus audio (e.g., `http://localhost:8001`)
+* `OPUS_STORAGE_PROVIDER` — set to `s3` to enable object storage for Opus files
+* `OPUS_STORAGE_BUCKET` — bucket for Opus files (MinIO/S3)
+* `OPUS_STORAGE_PREFIX` — prefix for Opus objects (defaults to `opus`)
+* `OPUS_STORAGE_ENDPOINT_URL` — S3 endpoint URL (e.g., `http://localhost:9000` for MinIO)
+* `OPUS_STORAGE_ACCESS_KEY_ID`, `OPUS_STORAGE_SECRET_ACCESS_KEY` — S3 credentials
+* `OPUS_STORAGE_PUBLIC_BASE_URL` — public base URL for Opus objects (optional)
+* `OPUS_STORAGE_SIGNED_URL_TTL_SECONDS` — TTL for signed URLs
+* `OPUS_STORAGE_TTL_SECONDS` — TTL for objects before refresh
 
 > Do not commit `.env`. The repo should ignore it.
 
@@ -259,6 +267,7 @@ unless otherwise noted.
 * `GET /tracks/{track_id}/audio` — redirects to the track MP3 URL (404 if missing).
 * `GET /tracks/{track_id}/opus` — serves cached Opus audio for the track. Cached files are stored at
   `static/opus/{track_id}.opus` for up to `OPUS_CACHE_TTL_SECONDS` seconds before being re-transcoded.
+  When `OPUS_STORAGE_PROVIDER=s3`, the API redirects to MinIO/S3 instead.
 
 ### Auth requirements
 
