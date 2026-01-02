@@ -14,6 +14,7 @@ import discord
 
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
+from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class GuildAudioController:
         self._current_source: Optional[discord.FFmpegOpusAudio] = None
         self._stderr_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._suno_client = HttpxSunoClient()
 
     async def play_next(self, voice_client: discord.VoiceClient) -> Track | None:
         async with self._lock:
@@ -135,6 +137,7 @@ class GuildAudioController:
             )
             return
 
+        await self._ensure_track_media(track)
         embed = build_now_playing_embed(track)
         await channel.send(embed=embed)
 
@@ -199,6 +202,17 @@ class GuildAudioController:
                 if track.audio_url:
                     return track.audio_url
         return url
+
+    async def _ensure_track_media(self, track: Track) -> None:
+        if track.media_url or not track.page_url:
+            return
+        try:
+            data = await self._suno_client.fetch_track(track.page_url)
+        except SunoScrapeError as exc:
+            logger.warning("Failed to fetch media for guild %s: %s", self.guild_id, exc)
+            return
+        if data.media_url:
+            track.media_url = data.media_url
 
     async def _probe_duration_seconds(self, url: str) -> float | None:
         def _run_probe() -> float | None:
