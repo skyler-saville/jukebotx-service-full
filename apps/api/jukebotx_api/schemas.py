@@ -15,6 +15,10 @@ class TrackSummary(BaseModel):
     image_url: str | None
     video_url: str | None
     mp3_url: str | None
+    opus_url: str | None
+    opus_path: str | None
+    opus_status: str | None
+    opus_transcoded_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
 

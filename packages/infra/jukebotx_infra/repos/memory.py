@@ -51,6 +51,10 @@ class InMemoryTrackRepository(TrackRepository):
                 image_url=data.image_url or existing.image_url,
                 video_url=data.video_url or existing.video_url,
                 mp3_url=data.mp3_url or existing.mp3_url,
+                opus_url=data.opus_url or existing.opus_url,
+                opus_path=data.opus_path or existing.opus_path,
+                opus_status=data.opus_status or existing.opus_status,
+                opus_transcoded_at=data.opus_transcoded_at or existing.opus_transcoded_at,
                 updated_at=now,
             )
             self._by_id[existing.id] = updated
@@ -67,12 +71,37 @@ class InMemoryTrackRepository(TrackRepository):
             image_url=data.image_url,
             video_url=data.video_url,
             mp3_url=data.mp3_url,
+            opus_url=data.opus_url,
+            opus_path=data.opus_path,
+            opus_status=data.opus_status,
+            opus_transcoded_at=data.opus_transcoded_at,
             created_at=now,
             updated_at=now,
         )
         self._by_id[track_id] = track
         self._by_url[data.suno_url] = track_id
         return track
+
+    async def update_opus_metadata(
+        self,
+        *,
+        track_id: UUID,
+        opus_url: str | None,
+        opus_path: str | None,
+        opus_status: str | None,
+        opus_transcoded_at: datetime | None,
+    ) -> Track:
+        track = await self.get_by_id(track_id)
+        updated = replace(
+            track,
+            opus_url=opus_url,
+            opus_path=opus_path,
+            opus_status=opus_status,
+            opus_transcoded_at=opus_transcoded_at,
+            updated_at=_now(),
+        )
+        self._by_id[track_id] = updated
+        return updated
 
 
 class InMemorySubmissionRepository(SubmissionRepository):
