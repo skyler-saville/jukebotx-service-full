@@ -19,6 +19,7 @@ httpx = {extras = ["http2"], version = "^0.28.1"}
 jinja2 = "^3.1.5"
 uvicorn = {extras = ["standard"], version = "^0.38.0"}
 pynacl = "^1.6.1"
+boto3 = "^1.40.33"
 
 
 [tool.poetry.group.dev.dependencies]

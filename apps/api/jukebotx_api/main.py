@@ -33,6 +33,7 @@ from jukebotx_api.schemas import (
     TrackSummary,
 )
 from jukebotx_infra.opus_cache import OpusCacheService
+from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
 from jukebotx_api.settings import ApiSettings, load_api_settings
 from jukebotx_core.ports.repositories import OpusJobCreate, Track
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
@@ -71,6 +72,22 @@ def get_opus_cache_service(settings: ApiSettings = Depends(load_api_settings)) -
     if not cache_dir.is_absolute():
         cache_dir = BASE_DIR / cache_dir
     return OpusCacheService(cache_dir=cache_dir, ttl_seconds=settings.opus_cache_ttl_seconds)
+
+
+def get_opus_storage_service(settings: ApiSettings = Depends(load_api_settings)) -> OpusStorageService:
+    config = OpusStorageConfig(
+        provider=settings.opus_storage_provider,
+        bucket=settings.opus_storage_bucket,
+        prefix=settings.opus_storage_prefix,
+        region=settings.opus_storage_region,
+        endpoint_url=settings.opus_storage_endpoint_url,
+        access_key_id=settings.opus_storage_access_key_id,
+        secret_access_key=settings.opus_storage_secret_access_key,
+        public_base_url=settings.opus_storage_public_base_url,
+        signed_url_ttl_seconds=settings.opus_storage_signed_url_ttl_seconds,
+        ttl_seconds=settings.opus_storage_ttl_seconds,
+    )
+    return OpusStorageService(config)
 
 
 def ensure_guild_access(session: SessionData, guild_id: int) -> None:
@@ -268,6 +285,7 @@ async def get_track_opus(
     session: SessionData = Depends(require_session),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
     opus_cache: OpusCacheService = Depends(get_opus_cache_service),
+    opus_storage: OpusStorageService = Depends(get_opus_storage_service),
     opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
 ) -> FileResponse | RedirectResponse:
     track = await require_track(track_repo, track_id)
@@ -275,10 +293,17 @@ async def get_track_opus(
         raise HTTPException(status_code=404, detail="Track audio not available.")
 
     if track.opus_status == "completed":
-        opus_path_value = track.opus_path or str(opus_cache.cache_path(track_id=track_id))
-        opus_path = Path(opus_path_value)
-        if opus_path.exists():
-            return FileResponse(opus_path, media_type="audio/opus", filename=f"{track_id}.opus")
+        if opus_storage.is_enabled:
+            object_key = track.opus_path or ""
+            if object_key and opus_storage.is_fresh(object_key=object_key):
+                return RedirectResponse(url=opus_storage.get_access_url(object_key=object_key))
+            if track.opus_url:
+                return RedirectResponse(url=track.opus_url)
+        else:
+            opus_path_value = track.opus_path or str(opus_cache.cache_path(track_id=track_id))
+            opus_path = Path(opus_path_value)
+            if opus_path.exists():
+                return FileResponse(opus_path, media_type="audio/opus", filename=f"{track_id}.opus")
 
     await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
     return RedirectResponse(url=track.mp3_url)
@@ -290,6 +315,7 @@ async def get_track_opus_status(
     session: SessionData = Depends(require_session),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
     opus_cache: OpusCacheService = Depends(get_opus_cache_service),
+    opus_storage: OpusStorageService = Depends(get_opus_storage_service),
     opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
 ) -> OpusStatusResponse:
     track = await require_track(track_repo, track_id)
@@ -297,10 +323,17 @@ async def get_track_opus_status(
         raise HTTPException(status_code=404, detail="Track audio not available.")
 
     if track.opus_status == "completed":
-        opus_path_value = track.opus_path or str(opus_cache.cache_path(track_id=track_id))
-        opus_path = Path(opus_path_value)
-        if opus_path.exists():
-            return OpusStatusResponse(track_id=track_id, ready=True, status="ready")
+        if opus_storage.is_enabled:
+            object_key = track.opus_path or ""
+            if object_key and opus_storage.is_fresh(object_key=object_key):
+                return OpusStatusResponse(track_id=track_id, ready=True, status="ready")
+            if track.opus_url:
+                return OpusStatusResponse(track_id=track_id, ready=True, status="ready")
+        else:
+            opus_path_value = track.opus_path or str(opus_cache.cache_path(track_id=track_id))
+            opus_path = Path(opus_path_value)
+            if opus_path.exists():
+                return OpusStatusResponse(track_id=track_id, ready=True, status="ready")
     if track.opus_status == "failed":
         return OpusStatusResponse(track_id=track_id, ready=False, status="failed")
 
