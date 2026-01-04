@@ -73,6 +73,8 @@ class JukeBot(commands.Bot):
 
         logging.basicConfig(level=logging.INFO)
 
+        self.remove_command("help")
+
         # Register events + commands once, right after construction.
         self._register_events()
         self._register_commands()
@@ -300,6 +302,67 @@ class JukeBot(commands.Bot):
     # Commands
     # -----------------------------
     def _register_commands(self) -> None:
+        @self.command(name="help")
+        async def help_command(ctx: commands.Context) -> None:
+            embed = discord.Embed(
+                title="JukeBotx Help",
+                description=(
+                    "Command prefix: `;`\n"
+                    "Drop Suno links in chat to queue when submissions are open. "
+                    "Use `;playlist <url>` for Suno playlists (mods only)."
+                ),
+                color=discord.Color.blurple(),
+            )
+            embed.add_field(
+                name="Session",
+                value=(
+                    "`;join` — Join your voice channel.\n"
+                    "`;leave` — Leave and reset the session.\n"
+                    "`;open` / `;close` — Toggle submissions (mods).\n"
+                    "`;web` — Share the session web URL.\n"
+                    "`;setlist` — DM the current session setlist."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Queue + Playback",
+                value=(
+                    "`;q` — Show the queue and session status.\n"
+                    "`;p` — Start playback of the queue.\n"
+                    "`;np` — Show now playing info.\n"
+                    "`;n` — Skip the current track (mods).\n"
+                    "`;s` — Stop playback (mods)."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Queue Management (mods)",
+                value=(
+                    "`;playlist <url>` — Queue a Suno playlist and close submissions.\n"
+                    "`;clear` — Clear the queue.\n"
+                    "`;remove <index>` — Remove a queued item.\n"
+                    "`;limit <count>` — Set per-user submission limit."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Autoplay + DJ Mode (mods)",
+                value=(
+                    "`;autoplay` — Enable autoplay until the queue ends.\n"
+                    "`;autoplay <count>` — Play the next N tracks.\n"
+                    "`;autoplay off` — Disable autoplay.\n"
+                    "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Announcements (mods)",
+                value="`;ping here <message>` or `;ping jamsession <message>` — Ping channels/roles.",
+                inline=False,
+            )
+            embed.set_footer(text="Need help? Ask a mod or use ;help anytime.")
+            await ctx.send(embed=embed)
+
         @self.command(name="join")
         async def join(ctx: commands.Context) -> None:
             if ctx.guild is None or not isinstance(ctx.author, discord.Member):
