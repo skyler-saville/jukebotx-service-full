@@ -246,8 +246,10 @@ def _parse_title_artist_from_description(description: str | None) -> tuple[str |
 
     # Trim promo sentence if present
     promo = "listen and make your own on suno"
-    if promo in right.lower():
-        right = right.split(".", 1)[0].strip()
+    lowered_right = right.lower()
+    promo_index = lowered_right.find(promo)
+    if promo_index != -1:
+        right = right[:promo_index].rstrip(" .").strip()
 
     artist_display = right.strip() or None
     return song_title, artist_display, artist_username
