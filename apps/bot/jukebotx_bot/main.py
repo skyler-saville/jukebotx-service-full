@@ -634,12 +634,12 @@ class JukeBot(commands.Bot):
                 return
 
             if not session.queue:
-                await ctx.send("Queue is empty. Use ;playlist <url>.")
+                await ctx.send("Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>.")
                 return
 
             started = await audio.play_next(ctx.voice_client)
             if started is None:
-                await ctx.send("Queue is empty. Use ;playlist <url>.")
+                await ctx.send("Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>.")
                 return
 
             session.now_playing_channel_id = ctx.channel.id
