@@ -71,7 +71,7 @@ def _parse_meta_tags(page_html: str) -> dict[str, str]:
     tags: dict[str, str] = {}
     for m in _META_TAG_RE.finditer(page_html):
         key = m.group("key").strip()
-        val = m.group("val").strip()
+        val = html_lib.unescape(m.group("val").strip())
         if key and val:
             tags[key] = val
     return tags
