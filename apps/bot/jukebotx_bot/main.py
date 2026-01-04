@@ -590,6 +590,14 @@ class JukeBot(commands.Bot):
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             lines: list[str] = []
+            if session.submissions_open:
+                lines.append("Session is open.")
+                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                    lines.append("Add a Suno URL to queue a song, or use `;playlist <url>`.")
+                else:
+                    lines.append("Add a Suno URL to queue a song.")
+            else:
+                lines.append("Session is closed.")
 
             if session.queue:
                 total = len(session.queue)
