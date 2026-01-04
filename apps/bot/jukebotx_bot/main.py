@@ -592,7 +592,13 @@ class JukeBot(commands.Bot):
             lines: list[str] = []
 
             if session.queue:
-                lines.append("Up next:")
+                total = len(session.queue)
+                if total == 1:
+                    lines.append("Last song")
+                elif total > 5:
+                    lines.append(f"Next 5 out of {total}")
+                else:
+                    lines.append(f"Next {total}")
                 for idx, track in enumerate(session.queue[:5], start=1):
                     lines.append(f"{idx}. {track.title} (requested by {track.requester_name})")
             else:
