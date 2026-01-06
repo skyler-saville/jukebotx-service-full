@@ -11,8 +11,13 @@ class ApiSettings:
     discord_client_secret: str
     discord_redirect_uri: str
     discord_required_guild_id: str
+    discord_activity_client_id: str
+    discord_activity_client_secret: str
+    discord_activity_redirect_uri: str
     session_secret: str
     session_ttl_seconds: int
+    jwt_secret: str
+    jwt_ttl_seconds: int
     opus_cache_dir: str
     opus_cache_ttl_seconds: int
     opus_storage_provider: str
@@ -34,8 +39,13 @@ def load_api_settings() -> ApiSettings:
         discord_client_secret=os.environ.get("DISCORD_OAUTH_CLIENT_SECRET", ""),
         discord_redirect_uri=os.environ.get("DISCORD_OAUTH_REDIRECT_URI", ""),
         discord_required_guild_id=os.environ.get("DISCORD_GUILD_ID", ""),
+        discord_activity_client_id=os.environ.get("DISCORD_ACTIVITY_CLIENT_ID", ""),
+        discord_activity_client_secret=os.environ.get("DISCORD_ACTIVITY_CLIENT_SECRET", ""),
+        discord_activity_redirect_uri=os.environ.get("DISCORD_ACTIVITY_REDIRECT_URI", ""),
         session_secret=os.environ.get("API_SESSION_SECRET", ""),
         session_ttl_seconds=int(os.environ.get("API_SESSION_TTL_SECONDS", "86400")),
+        jwt_secret=os.environ.get("API_JWT_SECRET", ""),
+        jwt_ttl_seconds=int(os.environ.get("API_JWT_TTL_SECONDS", "900")),
         opus_cache_dir=os.environ.get("OPUS_CACHE_DIR", "static/opus"),
         opus_cache_ttl_seconds=int(os.environ.get("OPUS_CACHE_TTL_SECONDS", "604800")),
         opus_storage_provider=os.environ.get("OPUS_STORAGE_PROVIDER", "s3"),
