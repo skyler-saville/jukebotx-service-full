@@ -4,10 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.websockets import WebSocketException
 from pydantic import BaseModel
 
 from jukebotx_api.auth import (
@@ -25,8 +26,10 @@ from jukebotx_api.auth import (
     fetch_user_guilds,
     parse_session_cookie,
     require_api_auth,
+    require_api_jwt_websocket,
     validate_state_token,
 )
+from jukebotx_api.broadcaster import SessionEventBroadcaster, get_event_broadcaster
 from jukebotx_api.schemas import (
     NextQueueItemResponse,
     OpusStatusResponse,
@@ -45,7 +48,7 @@ from jukebotx_core.contracts import (
     ReactionCountDTO,
     SessionStateDTO,
 )
-from jukebotx_core.ports.repositories import OpusJobCreate, QueueItem, Track
+from jukebotx_core.ports.repositories import JamSession, OpusJobCreate, QueueItem, Track
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
 from jukebotx_infra.db import async_session_factory
 from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
@@ -149,6 +152,55 @@ def build_queue_item_dto(item: QueueItem, track: Track) -> QueueItemDTO:
         image_url=track.image_url,
         mp3_url=track.mp3_url,
         opus_url=track.opus_url,
+    )
+
+
+async def build_session_state(
+    *,
+    guild_id: int,
+    channel_id: int | None,
+    jam_session: JamSession | None,
+    limit: int,
+    queue_repo: PostgresQueueRepository,
+    track_repo: PostgresTrackRepository,
+    session_reaction_repo: PostgresSessionReactionRepository,
+) -> SessionStateDTO:
+    session_id = jam_session.id if jam_session else None
+    queue_items: list[QueueItemDTO] = []
+    reactions: list[ReactionCountDTO] = []
+    now_playing: NowPlayingDTO | None = None
+
+    if jam_session:
+        queue_domain = await queue_repo.preview(guild_id=guild_id, session_id=session_id, limit=limit)
+        tracks = await asyncio.gather(*(require_track(track_repo, item.track_id) for item in queue_domain))
+        queue_items = [build_queue_item_dto(item, track) for item, track in zip(queue_domain, tracks)]
+
+        next_item = await queue_repo.get_next_unplayed(guild_id=guild_id, session_id=session_id)
+        if next_item:
+            next_track = await require_track(track_repo, next_item.track_id)
+            now_playing = NowPlayingDTO(queue_item=build_queue_item_dto(next_item, next_track))
+
+        reactions_domain = await session_reaction_repo.list_for_session(session_id=session_id)
+        reaction_counts: dict[tuple[UUID, str], int] = {}
+        for reaction in reactions_domain:
+            key = (reaction.track_id, reaction.reaction_type.value)
+            reaction_counts[key] = reaction_counts.get(key, 0) + 1
+        reactions = [
+            ReactionCountDTO(track_id=track_id, reaction_type=reaction_type, count=count)
+            for (track_id, reaction_type), count in reaction_counts.items()
+        ]
+
+    return SessionStateDTO(
+        session_id=session_id,
+        guild_id=guild_id,
+        channel_id=jam_session.channel_id if jam_session else channel_id,
+        status=jam_session.status.value if jam_session else None,
+        created_at=jam_session.created_at if jam_session else None,
+        updated_at=jam_session.updated_at if jam_session else None,
+        ended_at=jam_session.ended_at if jam_session else None,
+        now_playing=now_playing,
+        queue=queue_items,
+        reactions=reactions,
     )
 
 
@@ -325,45 +377,113 @@ async def get_activity_state(
     jam_session = await jam_session_repo.get_active_for_guild(guild_id=guild_id)
     if jam_session and jam_session.channel_id != channel_id:
         jam_session = None
-
-    session_id = jam_session.id if jam_session else None
-    queue_items: list[QueueItemDTO] = []
-    reactions: list[ReactionCountDTO] = []
-    now_playing: NowPlayingDTO | None = None
-
-    if session_id:
-        queue_domain = await queue_repo.preview(guild_id=guild_id, session_id=session_id, limit=limit)
-        tracks = await asyncio.gather(*(require_track(track_repo, item.track_id) for item in queue_domain))
-        queue_items = [build_queue_item_dto(item, track) for item, track in zip(queue_domain, tracks)]
-
-        next_item = await queue_repo.get_next_unplayed(guild_id=guild_id, session_id=session_id)
-        if next_item:
-            next_track = await require_track(track_repo, next_item.track_id)
-            now_playing = NowPlayingDTO(queue_item=build_queue_item_dto(next_item, next_track))
-
-        reactions_domain = await session_reaction_repo.list_for_session(session_id=session_id)
-        reaction_counts: dict[tuple[UUID, str], int] = {}
-        for reaction in reactions_domain:
-            key = (reaction.track_id, reaction.reaction_type.value)
-            reaction_counts[key] = reaction_counts.get(key, 0) + 1
-        reactions = [
-            ReactionCountDTO(track_id=track_id, reaction_type=reaction_type, count=count)
-            for (track_id, reaction_type), count in reaction_counts.items()
-        ]
-
-    state = SessionStateDTO(
-        session_id=session_id,
+    state = await build_session_state(
         guild_id=guild_id,
-        channel_id=jam_session.channel_id if jam_session else channel_id,
-        status=jam_session.status.value if jam_session else None,
-        created_at=jam_session.created_at if jam_session else None,
-        updated_at=jam_session.updated_at if jam_session else None,
-        ended_at=jam_session.ended_at if jam_session else None,
-        now_playing=now_playing,
-        queue=queue_items,
-        reactions=reactions,
+        channel_id=channel_id,
+        jam_session=jam_session,
+        limit=limit,
+        queue_repo=queue_repo,
+        track_repo=track_repo,
+        session_reaction_repo=session_reaction_repo,
     )
     return EventEnvelope(event_type="session.state", data=state)
+
+
+@app.get("/v1/sessions/active", response_model=SessionStateDTO)
+async def get_active_session_state(
+    guild_id: int,
+    limit: int = 10,
+    session: SessionData = Depends(require_api_auth),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+    session_reaction_repo: PostgresSessionReactionRepository = Depends(get_session_reaction_repo),
+) -> SessionStateDTO:
+    ensure_guild_access(session, guild_id)
+    jam_session = await jam_session_repo.get_active_for_guild(guild_id=guild_id)
+    return await build_session_state(
+        guild_id=guild_id,
+        channel_id=None,
+        jam_session=jam_session,
+        limit=limit,
+        queue_repo=queue_repo,
+        track_repo=track_repo,
+        session_reaction_repo=session_reaction_repo,
+    )
+
+
+@app.get("/v1/sessions/{session_id}/state", response_model=SessionStateDTO)
+async def get_session_state(
+    session_id: UUID,
+    limit: int = 10,
+    session: SessionData = Depends(require_api_auth),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+    session_reaction_repo: PostgresSessionReactionRepository = Depends(get_session_reaction_repo),
+) -> SessionStateDTO:
+    jam_session = await jam_session_repo.get_by_id(session_id=session_id)
+    if jam_session is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    ensure_guild_access(session, jam_session.guild_id)
+    return await build_session_state(
+        guild_id=jam_session.guild_id,
+        channel_id=jam_session.channel_id,
+        jam_session=jam_session,
+        limit=limit,
+        queue_repo=queue_repo,
+        track_repo=track_repo,
+        session_reaction_repo=session_reaction_repo,
+    )
+
+
+@app.websocket("/v1/sessions/{session_id}/events")
+async def session_events(
+    websocket: WebSocket,
+    session_id: UUID,
+    limit: int = 10,
+    session: SessionData = Depends(require_api_jwt_websocket),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+    session_reaction_repo: PostgresSessionReactionRepository = Depends(get_session_reaction_repo),
+    broadcaster: SessionEventBroadcaster = Depends(get_event_broadcaster),
+) -> None:
+    jam_session = await jam_session_repo.get_by_id(session_id=session_id)
+    if jam_session is None:
+        raise WebSocketException(code=1008)
+    ensure_guild_access(session, jam_session.guild_id)
+
+    await websocket.accept()
+    initial_state = await build_session_state(
+        guild_id=jam_session.guild_id,
+        channel_id=jam_session.channel_id,
+        jam_session=jam_session,
+        limit=limit,
+        queue_repo=queue_repo,
+        track_repo=track_repo,
+        session_reaction_repo=session_reaction_repo,
+    )
+    await websocket.send_json(EventEnvelope(event_type="session.state", data=initial_state).model_dump())
+
+    try:
+        async with broadcaster.subscribe(session_id) as queue:
+            while True:
+                receive_task = asyncio.create_task(websocket.receive_text())
+                queue_task = asyncio.create_task(queue.get())
+                done, pending = await asyncio.wait(
+                    {receive_task, queue_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                if queue_task in done:
+                    envelope = queue_task.result()
+                    await websocket.send_json(envelope.model_dump())
+                else:
+                    _ = receive_task.result()
+    except WebSocketDisconnect:
+        return
 
 
 @app.get(
