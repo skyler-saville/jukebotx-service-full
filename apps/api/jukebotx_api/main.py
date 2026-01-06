@@ -35,11 +35,20 @@ from jukebotx_api.schemas import (
 from jukebotx_infra.opus_cache import OpusCacheService
 from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
 from jukebotx_api.settings import ApiSettings, load_api_settings
-from jukebotx_core.ports.repositories import OpusJobCreate, Track
+from jukebotx_core.contracts import (
+    EventEnvelope,
+    NowPlayingDTO,
+    QueueItemDTO,
+    ReactionCountDTO,
+    SessionStateDTO,
+)
+from jukebotx_core.ports.repositories import OpusJobCreate, QueueItem, Track
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
 from jukebotx_infra.db import async_session_factory
 from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
+from jukebotx_infra.repos.jam_session_repo import PostgresJamSessionRepository
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
+from jukebotx_infra.repos.session_reaction_repo import PostgresSessionReactionRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 
@@ -53,6 +62,14 @@ logger = logging.getLogger(__name__)
 
 def get_queue_repo() -> PostgresQueueRepository:
     return PostgresQueueRepository(async_session_factory)
+
+
+def get_jam_session_repo() -> PostgresJamSessionRepository:
+    return PostgresJamSessionRepository(async_session_factory)
+
+
+def get_session_reaction_repo() -> PostgresSessionReactionRepository:
+    return PostgresSessionReactionRepository(async_session_factory)
 
 
 def get_track_repo() -> PostgresTrackRepository:
@@ -100,6 +117,23 @@ async def require_track(track_repo: PostgresTrackRepository, track_id: UUID) -> 
         return await track_repo.get_by_id(track_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def build_queue_item_dto(item: QueueItem, track: Track) -> QueueItemDTO:
+    return QueueItemDTO(
+        id=item.id,
+        position=item.position,
+        status=item.status,
+        requested_by=item.requested_by,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        track_id=track.id,
+        title=track.title,
+        artist_display=track.artist_display,
+        image_url=track.image_url,
+        mp3_url=track.mp3_url,
+        opus_url=track.opus_url,
+    )
 
 
 @app.get("/healthz")
@@ -220,6 +254,143 @@ async def get_queue_preview(
         for item, track in zip(result.items, tracks)
     ]
     return QueuePreviewResponse(items=items)
+
+
+@app.get(
+    "/guilds/{guild_id}/channels/{channel_id}/activity/state",
+    response_model=EventEnvelope[SessionStateDTO],
+)
+async def get_activity_state(
+    guild_id: int,
+    channel_id: int,
+    limit: int = 10,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+    session_reaction_repo: PostgresSessionReactionRepository = Depends(get_session_reaction_repo),
+) -> EventEnvelope[SessionStateDTO]:
+    ensure_guild_access(session, guild_id)
+    jam_session = await jam_session_repo.get_active_for_guild(guild_id=guild_id)
+    if jam_session and jam_session.channel_id != channel_id:
+        jam_session = None
+
+    session_id = jam_session.id if jam_session else None
+    queue_items: list[QueueItemDTO] = []
+    reactions: list[ReactionCountDTO] = []
+    now_playing: NowPlayingDTO | None = None
+
+    if session_id:
+        queue_domain = await queue_repo.preview(guild_id=guild_id, session_id=session_id, limit=limit)
+        tracks = await asyncio.gather(*(require_track(track_repo, item.track_id) for item in queue_domain))
+        queue_items = [build_queue_item_dto(item, track) for item, track in zip(queue_domain, tracks)]
+
+        next_item = await queue_repo.get_next_unplayed(guild_id=guild_id, session_id=session_id)
+        if next_item:
+            next_track = await require_track(track_repo, next_item.track_id)
+            now_playing = NowPlayingDTO(queue_item=build_queue_item_dto(next_item, next_track))
+
+        reactions_domain = await session_reaction_repo.list_for_session(session_id=session_id)
+        reaction_counts: dict[tuple[UUID, str], int] = {}
+        for reaction in reactions_domain:
+            key = (reaction.track_id, reaction.reaction_type.value)
+            reaction_counts[key] = reaction_counts.get(key, 0) + 1
+        reactions = [
+            ReactionCountDTO(track_id=track_id, reaction_type=reaction_type, count=count)
+            for (track_id, reaction_type), count in reaction_counts.items()
+        ]
+
+    state = SessionStateDTO(
+        session_id=session_id,
+        guild_id=guild_id,
+        channel_id=jam_session.channel_id if jam_session else channel_id,
+        status=jam_session.status.value if jam_session else None,
+        created_at=jam_session.created_at if jam_session else None,
+        updated_at=jam_session.updated_at if jam_session else None,
+        ended_at=jam_session.ended_at if jam_session else None,
+        now_playing=now_playing,
+        queue=queue_items,
+        reactions=reactions,
+    )
+    return EventEnvelope(event_type="session.state", data=state)
+
+
+@app.get(
+    "/guilds/{guild_id}/channels/{channel_id}/activity/queue",
+    response_model=EventEnvelope[list[QueueItemDTO]],
+)
+async def get_activity_queue(
+    guild_id: int,
+    channel_id: int,
+    limit: int = 10,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+) -> EventEnvelope[list[QueueItemDTO]]:
+    ensure_guild_access(session, guild_id)
+    jam_session = await jam_session_repo.get_active_for_guild(guild_id=guild_id)
+    if not jam_session or jam_session.channel_id != channel_id:
+        return EventEnvelope(event_type="queue.snapshot", data=[])
+
+    queue_domain = await queue_repo.preview(guild_id=guild_id, session_id=jam_session.id, limit=limit)
+    tracks = await asyncio.gather(*(require_track(track_repo, item.track_id) for item in queue_domain))
+    queue_items = [build_queue_item_dto(item, track) for item, track in zip(queue_domain, tracks)]
+    return EventEnvelope(event_type="queue.snapshot", data=queue_items)
+
+
+@app.get(
+    "/guilds/{guild_id}/channels/{channel_id}/activity/now-playing",
+    response_model=EventEnvelope[NowPlayingDTO],
+)
+async def get_activity_now_playing(
+    guild_id: int,
+    channel_id: int,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+) -> EventEnvelope[NowPlayingDTO]:
+    ensure_guild_access(session, guild_id)
+    jam_session = await jam_session_repo.get_active_for_guild(guild_id=guild_id)
+    if not jam_session or jam_session.channel_id != channel_id:
+        return EventEnvelope(event_type="now_playing", data=NowPlayingDTO(queue_item=None))
+
+    next_item = await queue_repo.get_next_unplayed(guild_id=guild_id, session_id=jam_session.id)
+    if not next_item:
+        return EventEnvelope(event_type="now_playing", data=NowPlayingDTO(queue_item=None))
+
+    track = await require_track(track_repo, next_item.track_id)
+    now_playing = NowPlayingDTO(queue_item=build_queue_item_dto(next_item, track))
+    return EventEnvelope(event_type="now_playing", data=now_playing)
+
+
+@app.get(
+    "/guilds/{guild_id}/channels/{channel_id}/activity/reactions",
+    response_model=EventEnvelope[list[ReactionCountDTO]],
+)
+async def get_activity_reactions(
+    guild_id: int,
+    channel_id: int,
+    session: SessionData = Depends(require_session),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+    session_reaction_repo: PostgresSessionReactionRepository = Depends(get_session_reaction_repo),
+) -> EventEnvelope[list[ReactionCountDTO]]:
+    ensure_guild_access(session, guild_id)
+    jam_session = await jam_session_repo.get_active_for_guild(guild_id=guild_id)
+    if not jam_session or jam_session.channel_id != channel_id:
+        return EventEnvelope(event_type="reactions.snapshot", data=[])
+
+    reactions_domain = await session_reaction_repo.list_for_session(session_id=jam_session.id)
+    reaction_counts: dict[tuple[UUID, str], int] = {}
+    for reaction in reactions_domain:
+        key = (reaction.track_id, reaction.reaction_type.value)
+        reaction_counts[key] = reaction_counts.get(key, 0) + 1
+    reactions = [
+        ReactionCountDTO(track_id=track_id, reaction_type=reaction_type, count=count)
+        for (track_id, reaction_type), count in reaction_counts.items()
+    ]
+    return EventEnvelope(event_type="reactions.snapshot", data=reactions)
 
 
 @app.get("/guilds/{guild_id}/queue/next", response_model=NextQueueItemResponse)
