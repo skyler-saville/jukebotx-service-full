@@ -39,7 +39,9 @@ async def cleanup_db(async_session_factory: async_sessionmaker) -> None:
     yield
     async with async_session_factory() as session:
         await session.execute(
-            text("TRUNCATE TABLE queue_items, submissions, tracks RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE TABLE session_reactions, queue_items, submissions, jam_sessions, tracks RESTART IDENTITY CASCADE"
+            )
         )
         await session.commit()
 

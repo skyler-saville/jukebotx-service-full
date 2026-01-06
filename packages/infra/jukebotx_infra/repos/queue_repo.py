@@ -20,6 +20,7 @@ def _to_domain(item: QueueItemModel) -> QueueItem:
     return QueueItem(
         id=item.id,
         guild_id=item.guild_id,
+        session_id=item.session_id,
         track_id=item.track_id,
         requested_by=item.requested_by,
         status=item.status,
@@ -40,12 +41,16 @@ class PostgresQueueRepository(QueueRepository):
         """Add a new queue item for a guild."""
         async with self._session_factory() as session:
             max_pos = await session.scalar(
-                select(func.max(QueueItemModel.position)).where(QueueItemModel.guild_id == data.guild_id)
+                select(func.max(QueueItemModel.position)).where(
+                    QueueItemModel.guild_id == data.guild_id,
+                    QueueItemModel.session_id == data.session_id,
+                )
             )
             next_pos = (max_pos or 0) + 1
             now = _now()
             created = QueueItemModel(
                 guild_id=data.guild_id,
+                session_id=data.session_id,
                 track_id=data.track_id,
                 requested_by=data.requested_by,
                 status="queued",
@@ -58,42 +63,59 @@ class PostgresQueueRepository(QueueRepository):
             await session.refresh(created)
             return _to_domain(created)
 
-    async def get_next_unplayed(self, *, guild_id: int) -> QueueItem | None:
+    async def get_next_unplayed(self, *, guild_id: int, session_id: UUID | None) -> QueueItem | None:
         """Fetch the next queued item for a guild."""
         async with self._session_factory() as session:
             result = await session.scalar(
                 select(QueueItemModel)
-                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.status == "queued")
+                .where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.session_id == session_id,
+                    QueueItemModel.status == "queued",
+                )
                 .order_by(QueueItemModel.position.asc())
                 .limit(1)
             )
             return _to_domain(result) if result else None
 
-    async def mark_played(self, *, guild_id: int, queue_item_id: UUID) -> None:
+    async def mark_played(self, *, guild_id: int, session_id: UUID | None, queue_item_id: UUID) -> None:
         """Mark a queue item as played."""
         async with self._session_factory() as session:
             result = await session.execute(
                 update(QueueItemModel)
-                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.id == queue_item_id)
+                .where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.session_id == session_id,
+                    QueueItemModel.id == queue_item_id,
+                )
                 .values(status="played", updated_at=_now())
             )
             await session.commit()
             if result.rowcount == 0:
                 raise KeyError(f"Queue item not found: {queue_item_id}")
 
-    async def preview(self, *, guild_id: int, limit: int) -> list[QueueItem]:
+    async def preview(self, *, guild_id: int, session_id: UUID | None, limit: int) -> list[QueueItem]:
         """Return a preview list of queued items for a guild."""
         async with self._session_factory() as session:
             rows = await session.scalars(
                 select(QueueItemModel)
-                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.status == "queued")
+                .where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.session_id == session_id,
+                    QueueItemModel.status == "queued",
+                )
                 .order_by(QueueItemModel.position.asc())
                 .limit(limit)
             )
             return [_to_domain(item) for item in rows]
 
-    async def clear(self, *, guild_id: int) -> None:
+    async def clear(self, *, guild_id: int, session_id: UUID | None) -> None:
         """Clear all queued items for a guild."""
         async with self._session_factory() as session:
-            await session.execute(delete(QueueItemModel).where(QueueItemModel.guild_id == guild_id))
+            await session.execute(
+                delete(QueueItemModel).where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.session_id == session_id,
+                )
+            )
             await session.commit()

@@ -198,13 +198,14 @@ async def auth_me(session: SessionData = Depends(require_session)) -> dict[str, 
 async def get_queue_preview(
     guild_id: int,
     limit: int = 10,
+    session_id: UUID | None = None,
     session: SessionData = Depends(require_session),
     queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
 ) -> QueuePreviewResponse:
     ensure_guild_access(session, guild_id)
     use_case = GetQueuePreview(queue_repo=queue_repo)
-    result = await use_case.execute(guild_id=guild_id, limit=limit)
+    result = await use_case.execute(guild_id=guild_id, session_id=session_id, limit=limit)
     tracks = await asyncio.gather(*(require_track(track_repo, item.track_id) for item in result.items))
     items = [
         QueueItemSummary(
@@ -224,12 +225,13 @@ async def get_queue_preview(
 @app.get("/guilds/{guild_id}/queue/next", response_model=NextQueueItemResponse)
 async def get_next_queue_item(
     guild_id: int,
+    session_id: UUID | None = None,
     session: SessionData = Depends(require_session),
     queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
 ) -> NextQueueItemResponse:
     ensure_guild_access(session, guild_id)
-    queue_item = await queue_repo.get_next_unplayed(guild_id=guild_id)
+    queue_item = await queue_repo.get_next_unplayed(guild_id=guild_id, session_id=session_id)
     if queue_item is None:
         return NextQueueItemResponse(queue_item=None)
     track = await require_track(track_repo, queue_item.track_id)

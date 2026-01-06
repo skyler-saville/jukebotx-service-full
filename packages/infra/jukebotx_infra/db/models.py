@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from uuid import UUID as PyUUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, BigInteger
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Enum as SqlEnum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -48,6 +61,43 @@ class SubmissionModel(Base):
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class JamSessionStatus(Enum):
+    ACTIVE = "active"
+    ENDED = "ended"
+
+
+class SessionReactionType(Enum):
+    UPVOTE = "upvote"
+    DOWNVOTE = "downvote"
+
+
+class JamSessionModel(Base):
+    """Database model for a jam session lifecycle."""
+
+    __tablename__ = "jam_sessions"
+    __table_args__ = (
+        Index(
+            "ix_jam_sessions_active_guild",
+            "guild_id",
+            unique=True,
+            postgresql_where=text("ended_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    channel_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    status: Mapped[JamSessionStatus] = mapped_column(
+        SqlEnum(JamSessionStatus, name="jam_session_status"),
+        index=True,
+        nullable=False,
+        default=JamSessionStatus.ACTIVE,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class QueueItemModel(Base):
     """Database model for a queued track in a guild."""
 
@@ -55,6 +105,11 @@ class QueueItemModel(Base):
 
     id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    session_id: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("jam_sessions.id"),
+        index=True,
+    )
     track_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tracks.id"), nullable=False)
 
     # Discord user snowflake -> MUST be BigInteger
@@ -65,6 +120,31 @@ class QueueItemModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+
+class SessionReactionModel(Base):
+    """Database model for reactions on session tracks."""
+
+    __tablename__ = "session_reactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "track_id",
+            "user_id",
+            "reaction_type",
+            name="uq_session_reactions_unique",
+        ),
+    )
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jam_sessions.id"), index=True)
+    track_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tracks.id"), index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reaction_type: Mapped[SessionReactionType] = mapped_column(
+        SqlEnum(SessionReactionType, name="session_reaction_type"),
+        index=True,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class OpusJobModel(Base):

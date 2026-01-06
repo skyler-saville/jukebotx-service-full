@@ -14,5 +14,5 @@ class MarkTrackPlayed:
     def __init__(self, *, queue_repo: QueueRepository) -> None:
         self._queue_repo = queue_repo
 
-    async def execute(self, *, guild_id: int, queue_item_id: UUID) -> None:
-        await self._queue_repo.mark_played(guild_id=guild_id, queue_item_id=queue_item_id)
+    async def execute(self, *, guild_id: int, queue_item_id: UUID, session_id: UUID | None = None) -> None:
+        await self._queue_repo.mark_played(guild_id=guild_id, session_id=session_id, queue_item_id=queue_item_id)

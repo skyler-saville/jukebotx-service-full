@@ -22,8 +22,8 @@ class GetNextTrack:
         self._queue_repo = queue_repo
         self._track_repo = track_repo
 
-    async def execute(self, *, guild_id: int) -> NextTrackResult | None:
-        qi = await self._queue_repo.get_next_unplayed(guild_id=guild_id)
+    async def execute(self, *, guild_id: int, session_id: UUID | None = None) -> NextTrackResult | None:
+        qi = await self._queue_repo.get_next_unplayed(guild_id=guild_id, session_id=session_id)
         if qi is None:
             return None
 

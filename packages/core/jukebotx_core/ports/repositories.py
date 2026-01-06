@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from uuid import UUID
 
 
@@ -61,6 +62,7 @@ class QueueItem:
     """
     id: UUID
     guild_id: int
+    session_id: UUID | None
     track_id: UUID
     requested_by: int
     status: str  # "queued" | "playing" | "played" | "skipped"
@@ -99,6 +101,53 @@ class QueueItemCreate:
     guild_id: int
     track_id: UUID
     requested_by: int
+    session_id: UUID | None = None
+
+
+class JamSessionStatus(Enum):
+    ACTIVE = "active"
+    ENDED = "ended"
+
+
+class SessionReactionType(Enum):
+    UPVOTE = "upvote"
+    DOWNVOTE = "downvote"
+
+
+@dataclass(frozen=True)
+class JamSession:
+    id: UUID
+    guild_id: int
+    channel_id: int
+    status: JamSessionStatus
+    created_at: datetime
+    updated_at: datetime
+    ended_at: datetime | None
+
+
+@dataclass(frozen=True)
+class JamSessionCreate:
+    guild_id: int
+    channel_id: int
+    status: JamSessionStatus = JamSessionStatus.ACTIVE
+
+
+@dataclass(frozen=True)
+class SessionReaction:
+    id: UUID
+    session_id: UUID
+    track_id: UUID
+    user_id: int
+    reaction_type: SessionReactionType
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class SessionReactionCreate:
+    session_id: UUID
+    track_id: UUID
+    user_id: int
+    reaction_type: SessionReactionType
 
 
 @dataclass(frozen=True)
@@ -169,14 +218,46 @@ class QueueRepository:
     async def enqueue(self, data: QueueItemCreate) -> QueueItem:
         raise NotImplementedError
 
-    async def get_next_unplayed(self, *, guild_id: int) -> QueueItem | None:
+    async def get_next_unplayed(self, *, guild_id: int, session_id: UUID | None) -> QueueItem | None:
         raise NotImplementedError
 
-    async def mark_played(self, *, guild_id: int, queue_item_id: UUID) -> None:
+    async def mark_played(self, *, guild_id: int, session_id: UUID | None, queue_item_id: UUID) -> None:
         raise NotImplementedError
 
-    async def preview(self, *, guild_id: int, limit: int) -> list[QueueItem]:
+    async def preview(self, *, guild_id: int, session_id: UUID | None, limit: int) -> list[QueueItem]:
         raise NotImplementedError
 
-    async def clear(self, *, guild_id: int) -> None:
+    async def clear(self, *, guild_id: int, session_id: UUID | None) -> None:
+        raise NotImplementedError
+
+
+class JamSessionRepository:
+    async def create(self, data: JamSessionCreate) -> JamSession:
+        raise NotImplementedError
+
+    async def get_by_id(self, *, session_id: UUID) -> JamSession | None:
+        raise NotImplementedError
+
+    async def get_active_for_guild(self, *, guild_id: int) -> JamSession | None:
+        raise NotImplementedError
+
+    async def end(self, *, session_id: UUID) -> JamSession:
+        raise NotImplementedError
+
+
+class SessionReactionRepository:
+    async def add(self, data: SessionReactionCreate) -> SessionReaction:
+        raise NotImplementedError
+
+    async def list_for_session(self, *, session_id: UUID) -> list[SessionReaction]:
+        raise NotImplementedError
+
+    async def remove(
+        self,
+        *,
+        session_id: UUID,
+        track_id: UUID,
+        user_id: int,
+        reaction_type: SessionReactionType,
+    ) -> None:
         raise NotImplementedError
