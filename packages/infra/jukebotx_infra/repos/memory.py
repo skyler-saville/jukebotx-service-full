@@ -131,16 +131,17 @@ class InMemorySubmissionRepository(SubmissionRepository):
 
 class InMemoryQueueRepository(QueueRepository):
     def __init__(self) -> None:
-        self._by_guild: dict[int, list[QueueItem]] = {}
+        self._by_session: dict[tuple[int, UUID | None], list[QueueItem]] = {}
 
     async def enqueue(self, data: QueueItemCreate) -> QueueItem:
         now = _now()
-        items = self._by_guild.setdefault(data.guild_id, [])
+        items = self._by_session.setdefault((data.guild_id, data.session_id), [])
         position = len(items) + 1
 
         qi = QueueItem(
             id=uuid4(),
             guild_id=data.guild_id,
+            session_id=data.session_id,
             track_id=data.track_id,
             requested_by=data.requested_by,
             status="queued",
@@ -151,25 +152,25 @@ class InMemoryQueueRepository(QueueRepository):
         items.append(qi)
         return qi
 
-    async def get_next_unplayed(self, *, guild_id: int) -> QueueItem | None:
-        items = self._by_guild.get(guild_id, [])
+    async def get_next_unplayed(self, *, guild_id: int, session_id: UUID | None) -> QueueItem | None:
+        items = self._by_session.get((guild_id, session_id), [])
         for qi in items:
             if qi.status == "queued":
                 return qi
         return None
 
-    async def mark_played(self, *, guild_id: int, queue_item_id: UUID) -> None:
-        items = self._by_guild.get(guild_id, [])
+    async def mark_played(self, *, guild_id: int, session_id: UUID | None, queue_item_id: UUID) -> None:
+        items = self._by_session.get((guild_id, session_id), [])
         for idx, qi in enumerate(items):
             if qi.id == queue_item_id:
                 items[idx] = replace(qi, status="played", updated_at=_now())
                 return
         raise KeyError(f"Queue item not found: {queue_item_id}")
 
-    async def preview(self, *, guild_id: int, limit: int) -> list[QueueItem]:
-        items = self._by_guild.get(guild_id, [])
+    async def preview(self, *, guild_id: int, session_id: UUID | None, limit: int) -> list[QueueItem]:
+        items = self._by_session.get((guild_id, session_id), [])
         queued = [qi for qi in items if qi.status == "queued"]
         return queued[:limit]
 
-    async def clear(self, *, guild_id: int) -> None:
-        self._by_guild[guild_id] = []
+    async def clear(self, *, guild_id: int, session_id: UUID | None) -> None:
+        self._by_session[(guild_id, session_id)] = []

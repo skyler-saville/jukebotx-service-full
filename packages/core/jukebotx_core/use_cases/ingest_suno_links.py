@@ -22,6 +22,7 @@ class IngestSunoLinkInput:
     message_id: int
     author_id: int
     suno_url: str
+    session_id: UUID | None = None
     auto_enqueue: bool = False
 
 
@@ -108,6 +109,7 @@ class IngestSunoLink:
                     guild_id=data.guild_id,
                     track_id=track.id,
                     requested_by=data.author_id,
+                    session_id=data.session_id,
                 )
             )
             queued = True

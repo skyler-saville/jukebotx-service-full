@@ -405,7 +405,7 @@ class JukeBot(commands.Bot):
                 await audio.stop(ctx.voice_client)
                 await ctx.voice_client.disconnect()
 
-            await self.deps.queue_repo.clear(guild_id=ctx.guild.id)
+            await self.deps.queue_repo.clear(guild_id=ctx.guild.id, session_id=None)
             await self.deps.submission_repo.clear_for_channel(
                 guild_id=ctx.guild.id,
                 channel_id=ctx.channel.id,
