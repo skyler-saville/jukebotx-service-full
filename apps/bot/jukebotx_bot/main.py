@@ -31,9 +31,13 @@ from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
 
 
 def _is_mod(member: discord.Member) -> bool:
-    """Return True if the member has server-level moderation permissions."""
+    """Return True if the member has moderation permissions or an allowed role."""
     perms = member.guild_permissions
-    return bool(perms.administrator or perms.manage_guild)
+    if perms.administrator or perms.manage_guild:
+        return True
+
+    allowed_roles = {"admin", "mod", "master of ceremonies", "dj"}
+    return any(role.name.lower() in allowed_roles for role in member.roles)
 
 
 @dataclass(frozen=True)
