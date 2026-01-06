@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -27,6 +28,7 @@ from jukebotx_api.auth import (
     parse_session_cookie,
     require_api_auth,
     require_api_jwt_websocket,
+    require_internal_auth,
     validate_state_token,
 )
 from jukebotx_api.broadcaster import SessionEventBroadcaster, get_event_broadcaster
@@ -77,6 +79,13 @@ class DiscordActivityExchangeResponse(BaseModel):
     user_id: str
     username: str
     guild_ids: list[str]
+
+
+class PlaybackUpdateRequest(BaseModel):
+    guild_id: int
+    channel_id: int | None = None
+    event_type: str
+    data: dict[str, Any] | None = None
 
 
 def get_queue_repo() -> PostgresQueueRepository:
@@ -206,6 +215,24 @@ async def build_session_state(
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/v1/internal/playback-updates")
+async def post_playback_update(
+    payload: PlaybackUpdateRequest,
+    _: None = Depends(require_internal_auth),
+    jam_session_repo: PostgresJamSessionRepository = Depends(get_jam_session_repo),
+    broadcaster: SessionEventBroadcaster = Depends(get_event_broadcaster),
+) -> dict[str, str]:
+    jam_session = await jam_session_repo.get_active_for_guild(guild_id=payload.guild_id)
+    if jam_session is None:
+        raise HTTPException(status_code=404, detail="No active session for guild.")
+    if payload.channel_id is not None and jam_session.channel_id != payload.channel_id:
+        raise HTTPException(status_code=404, detail="No active session for channel.")
+
+    envelope = EventEnvelope(event_type=payload.event_type, data=payload.data or {})
+    await broadcaster.publish(jam_session.id, envelope)
     return {"status": "ok"}
 
 

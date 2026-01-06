@@ -18,8 +18,9 @@ import httpx
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
-from jukebotx_bot.discord.session import SessionManager, Track
+from jukebotx_bot.discord.session import SessionManager, SessionState, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
+from jukebotx_bot.internal_api import InternalApiClient, build_queue_payload
 from jukebotx_bot.settings import load_bot_settings
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
 from jukebotx_infra.db import async_session_factory, init_db
@@ -52,6 +53,7 @@ class BotDeps:
     playlist_client: HttpxSunoPlaylistClient
     submission_repo: PostgresSubmissionRepository
     queue_repo: PostgresQueueRepository
+    internal_api: InternalApiClient
 
 
 class JukeBot(commands.Bot):
@@ -108,6 +110,17 @@ class JukeBot(commands.Bot):
             return None
         base_url = self.settings.opus_api_base_url.rstrip("/")
         return f"{base_url}/tracks/{track_id}/opus"
+
+    def _notify_queue_update(self, *, guild_id: int, channel_id: int | None, session: SessionState) -> None:
+        payload = build_queue_payload(session.queue, session.now_playing)
+        asyncio.create_task(
+            self.deps.internal_api.post_playback_update(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                event_type="queue.updated",
+                data=payload,
+            )
+        )
 
     async def _prefetch_opus(self, track_id: UUID) -> None:
         if self.settings.opus_api_base_url is None:
@@ -284,6 +297,11 @@ class JukeBot(commands.Bot):
 
             if added_any:
                 session.mark_submission(user_id)
+                self._notify_queue_update(
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id,
+                    session=session,
+                )
                 try:
                     await message.add_reaction("🤘")
                 except discord.HTTPException:
@@ -409,6 +427,11 @@ class JukeBot(commands.Bot):
             await self.deps.submission_repo.clear_for_channel(
                 guild_id=ctx.guild.id,
                 channel_id=ctx.channel.id,
+            )
+            self._notify_queue_update(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                session=session,
             )
 
             await ctx.send("Left the voice channel. Session reset.")
@@ -640,6 +663,11 @@ class JukeBot(commands.Bot):
                 "Queued "
                 f"{len(playlist_data.items)} track(s) from the playlist. Submissions are now closed."
             )
+            self._notify_queue_update(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                session=session,
+            )
 
             if session.autoplay_enabled and session.now_playing is None and ctx.voice_client is not None:
                 audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
@@ -788,6 +816,11 @@ class JukeBot(commands.Bot):
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.queue.clear()
             await ctx.send("Queue cleared.")
+            self._notify_queue_update(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                session=session,
+            )
 
         @self.command(name="remove")
         async def remove(ctx: commands.Context, index: int) -> None:
@@ -806,6 +839,11 @@ class JukeBot(commands.Bot):
 
             track = session.queue.pop(index - 1)
             await ctx.send(f"Removed: {track.title} (requested by {track.requester_name}).")
+            self._notify_queue_update(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                session=session,
+            )
 
         @self.command(name="limit")
         async def limit(ctx: commands.Context, limit_value: int) -> None:
@@ -910,9 +948,11 @@ def build_bot() -> JukeBot:
     intents = discord.Intents.default()
     intents.message_content = True  # required for prefix commands
 
+    internal_api = InternalApiClient(settings.internal_api_base_url, settings.internal_api_token)
+
     deps = BotDeps(
         session_manager=SessionManager(),
-        audio_manager=AudioControllerManager(),
+        audio_manager=AudioControllerManager(internal_api),
         ingest_use_case=IngestSunoLink(
             suno_client=HttpxSunoClient(),
             track_repo=PostgresTrackRepository(async_session_factory),
@@ -922,6 +962,7 @@ def build_bot() -> JukeBot:
         playlist_client=HttpxSunoPlaylistClient(),
         submission_repo=PostgresSubmissionRepository(async_session_factory),
         queue_repo=PostgresQueueRepository(async_session_factory),
+        internal_api=internal_api,
     )
 
     return JukeBot(

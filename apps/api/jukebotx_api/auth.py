@@ -218,6 +218,13 @@ def _extract_token_from_websocket(websocket: WebSocket) -> str | None:
     return websocket.query_params.get("access_token")
 
 
+def _extract_internal_token(request: Request) -> str | None:
+    header_token = _get_bearer_token(request.headers.get("Authorization"))
+    if header_token:
+        return header_token
+    return request.headers.get("X-Internal-Token")
+
+
 def ensure_jwt_configured(settings: ApiSettings) -> None:
     if not settings.jwt_secret:
         raise HTTPException(status_code=500, detail="API JWT secret is not configured.")
@@ -240,6 +247,19 @@ def ensure_activity_oauth_configured(settings: ApiSettings) -> tuple[str, str, s
         missing_list = ", ".join(missing)
         raise HTTPException(status_code=500, detail=f"Activity configuration incomplete: {missing_list}")
     return client_id, client_secret, redirect_uri or None
+
+
+def require_internal_auth(
+    request: Request,
+    settings: ApiSettings = Depends(load_api_settings),
+) -> None:
+    if not settings.internal_api_token:
+        raise HTTPException(status_code=500, detail="Internal API token is not configured.")
+    token = _extract_internal_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing internal auth token.")
+    if not hmac.compare_digest(token, settings.internal_api_token):
+        raise HTTPException(status_code=401, detail="Invalid internal auth token.")
 
 
 async def exchange_code_for_token(code: str, settings: ApiSettings) -> dict[str, Any]:
