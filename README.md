@@ -485,3 +485,7 @@ If you want outside contributions later:
 ## License
 
 TBD.
+
+---
+
+## Discord Activity (Session View)
