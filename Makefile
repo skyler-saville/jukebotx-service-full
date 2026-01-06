@@ -1,4 +1,5 @@
-.PHONY: bot api up up-d build down destroy logs ps restart \
+.PHONY: bot api dev up up-d build down destroy logs ps restart \
+        activity-install activity-dev activity-build activity-shell \
         db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-playlist smoke-audio
 
 .ONESHELL:
@@ -6,6 +7,7 @@ SHELL := /bin/bash
 
 PYTHONPATH := apps/bot:apps/api:packages/core:packages/infra
 DC := docker compose
+CORE_SERVICES := db api worker bot activity minio
 
 # ---- Load .env into Make ----
 # This exports variables so recipes can use $(POSTGRES_USER), etc.
@@ -33,10 +35,13 @@ build:
 	$(DC) build
 
 up:
-	$(DC) up --build
+	$(DC) up --build $(CORE_SERVICES)
 
 up-d:
-	$(DC) up -d --build
+	$(DC) up -d --build $(CORE_SERVICES)
+
+dev:
+	$(DC) up --build $(CORE_SERVICES)
 
 down:
 	# Safe: preserves named volumes (your Postgres data)
@@ -54,6 +59,19 @@ ps:
 
 logs:
 	$(DC) logs -f
+
+# -------- Activity (Astro) --------
+activity-install:
+	cd apps/activity && npm install
+
+activity-dev:
+	cd apps/activity && npm run dev
+
+activity-build:
+	cd apps/activity && npm run build
+
+activity-shell:
+	cd apps/activity && /bin/bash
 
 # -------- Database helpers --------
 db-shell:
