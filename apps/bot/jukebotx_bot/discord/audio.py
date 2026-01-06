@@ -14,6 +14,7 @@ import discord
 
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
+from jukebotx_bot.internal_api import InternalApiClient, serialize_track
 from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 
 
@@ -26,9 +27,10 @@ _FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
 
 
 class GuildAudioController:
-    def __init__(self, guild_id: int, session: SessionState) -> None:
+    def __init__(self, guild_id: int, session: SessionState, internal_api: InternalApiClient) -> None:
         self.guild_id = guild_id
         self.session = session
+        self._internal_api = internal_api
         self._lock = asyncio.Lock()
         self._current_source: Optional[discord.FFmpegOpusAudio] = None
         self._stderr_thread: Optional[threading.Thread] = None
@@ -89,6 +91,7 @@ class GuildAudioController:
     ) -> None:
         if error is not None:
             logger.warning("Playback error in guild %s: %s", self.guild_id, error)
+        current_track = self.session.now_playing
 
         async with self._lock:
             if self._current_source is not source:
@@ -96,7 +99,17 @@ class GuildAudioController:
             await self._cleanup_ffmpeg()
             self.session.stop_playback()
 
-        self._log_track_end(error)
+        self._log_track_end(error, current_track)
+        if current_track is not None:
+            await self._internal_api.post_playback_update(
+                guild_id=self.guild_id,
+                channel_id=self.session.now_playing_channel_id,
+                event_type="playback.ended",
+                data={
+                    "track": serialize_track(current_track),
+                    "error": str(error) if error else None,
+                },
+            )
 
         if (self.session.autoplay_enabled or self.session.dj_enabled) and self.session.queue:
             logger.info(
@@ -116,6 +129,12 @@ class GuildAudioController:
             self.guild_id,
             track.title,
             self.session.now_playing_channel_id,
+        )
+        await self._internal_api.post_playback_update(
+            guild_id=self.guild_id,
+            channel_id=self.session.now_playing_channel_id,
+            event_type="playback.now_playing",
+            data={"track": serialize_track(track)},
         )
         channel_id = self.session.now_playing_channel_id
         if channel_id is None or voice_client.guild is None:
@@ -245,8 +264,8 @@ class GuildAudioController:
 
         return await asyncio.to_thread(_run_probe)
 
-    def _log_track_end(self, error: Exception | None) -> None:
-        current = self.session.now_playing
+    def _log_track_end(self, error: Exception | None, track: Track | None = None) -> None:
+        current = track or self.session.now_playing
         if current is None:
             return
         duration = current.duration_seconds
@@ -317,10 +336,11 @@ class GuildAudioController:
 
 
 class AudioControllerManager:
-    def __init__(self) -> None:
+    def __init__(self, internal_api: InternalApiClient) -> None:
         self._controllers: dict[int, GuildAudioController] = {}
+        self._internal_api = internal_api
 
     def for_guild(self, guild_id: int, session: SessionState) -> GuildAudioController:
         if guild_id not in self._controllers:
-            self._controllers[guild_id] = GuildAudioController(guild_id, session)
+            self._controllers[guild_id] = GuildAudioController(guild_id, session, self._internal_api)
         return self._controllers[guild_id]

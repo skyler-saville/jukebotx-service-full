@@ -18,6 +18,7 @@ class ApiSettings:
     session_ttl_seconds: int
     jwt_secret: str
     jwt_ttl_seconds: int
+    internal_api_token: str
     opus_cache_dir: str
     opus_cache_ttl_seconds: int
     opus_storage_provider: str
@@ -46,6 +47,7 @@ def load_api_settings() -> ApiSettings:
         session_ttl_seconds=int(os.environ.get("API_SESSION_TTL_SECONDS", "86400")),
         jwt_secret=os.environ.get("API_JWT_SECRET", ""),
         jwt_ttl_seconds=int(os.environ.get("API_JWT_TTL_SECONDS", "900")),
+        internal_api_token=os.environ.get("INTERNAL_API_TOKEN", ""),
         opus_cache_dir=os.environ.get("OPUS_CACHE_DIR", "static/opus"),
         opus_cache_ttl_seconds=int(os.environ.get("OPUS_CACHE_TTL_SECONDS", "604800")),
         opus_storage_provider=os.environ.get("OPUS_STORAGE_PROVIDER", "s3"),
