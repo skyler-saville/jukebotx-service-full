@@ -231,8 +231,8 @@ def ensure_jwt_configured(settings: ApiSettings) -> None:
 
 
 def ensure_activity_oauth_configured(settings: ApiSettings) -> tuple[str, str, str | None]:
-    client_id = settings.discord_activity_client_id or settings.discord_client_id
-    client_secret = settings.discord_activity_client_secret or settings.discord_client_secret
+    client_id = settings.discord_activity_client_id
+    client_secret = settings.discord_activity_client_secret
     redirect_uri = settings.discord_activity_redirect_uri or settings.discord_redirect_uri
     missing = [
         name
@@ -245,7 +245,15 @@ def ensure_activity_oauth_configured(settings: ApiSettings) -> tuple[str, str, s
     ]
     if missing:
         missing_list = ", ".join(missing)
-        raise HTTPException(status_code=500, detail=f"Activity configuration incomplete: {missing_list}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Activity configuration incomplete: "
+                f"{missing_list}. Set DISCORD_ACTIVITY_CLIENT_ID and "
+                "DISCORD_ACTIVITY_CLIENT_SECRET to the same Discord Activity app "
+                "used by PUBLIC_ACTIVITY_CLIENT_ID."
+            ),
+        )
     return client_id, client_secret, redirect_uri or None
 
 

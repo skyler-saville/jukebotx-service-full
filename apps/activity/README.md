@@ -15,6 +15,7 @@ Astro will start the dev server at <http://localhost:4321>.
 ## Environment variables
 
 - `PUBLIC_ACTIVITY_CLIENT_ID` lives in `apps/activity/.env` and is exposed to the browser.
+  It must match the API's `DISCORD_ACTIVITY_CLIENT_ID` so both use the same Discord Activity app.
 - `PUBLIC_API_BASE_URL` must be a publicly reachable API origin when running the Activity in Discord (for example a Cloudflared URL).
 - When running inside Discord, ensure the API CORS settings include the Activity origin (`CORS_ALLOWED_ORIGINS`)
   and Discord embed origins (for example `https://discord.com` and `https://.*\.discordsays\.com`).
