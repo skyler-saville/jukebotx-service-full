@@ -32,6 +32,7 @@ class ApiSettings:
     opus_storage_signed_url_ttl_seconds: int
     opus_storage_ttl_seconds: int
     cors_allowed_origins: str
+    cors_allowed_origin_regex: str
 
 
 def load_api_settings() -> ApiSettings:
@@ -64,4 +65,5 @@ def load_api_settings() -> ApiSettings:
         ),
         opus_storage_ttl_seconds=int(os.environ.get("OPUS_STORAGE_TTL_SECONDS", "604800")),
         cors_allowed_origins=os.environ.get("CORS_ALLOWED_ORIGINS", ""),
+        cors_allowed_origin_regex=os.environ.get("CORS_ALLOWED_ORIGIN_REGEX", ""),
     )
