@@ -1,0 +1,125 @@
+---
+const features = [
+  "Share session links with the community",
+  "Track the queue in real time",
+  "Highlight the currently playing track",
+  "Celebrate new submissions",
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>JukeBotx Activity</title>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <p class="eyebrow">JukeBotx</p>
+        <h1>Activity</h1>
+        <p class="lede">
+          A lightweight activity view for Discord jam sessions. Launch this app to keep
+          the crowd in sync.
+        </p>
+        <div class="actions">
+          <a class="primary" href="#get-started">Get started</a>
+          <a class="secondary" href="https://github.com" target="_blank" rel="noreferrer">
+            Learn more
+          </a>
+        </div>
+      </section>
+
+      <section id="get-started" class="card">
+        <h2>What it will do</h2>
+        <ul>
+          {features.map((feature) => (
+            <li>{feature}</li>
+          ))}
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Status</h2>
+        <p>
+          This Activity app is freshly bootstrapped with Astro. Add API calls and real-time
+          updates once the endpoints are ready.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
+
+<style>
+  :global(body) {
+    margin: 0;
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    background: #0b0f18;
+    color: #e6e9f4;
+  }
+
+  .page {
+    min-height: 100vh;
+    padding: 4rem 6vw;
+    display: grid;
+    gap: 2rem;
+  }
+
+  .hero {
+    display: grid;
+    gap: 1rem;
+    max-width: 640px;
+  }
+
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-size: 0.75rem;
+    color: #7aa2ff;
+    margin: 0;
+  }
+
+  .lede {
+    font-size: 1.1rem;
+    color: #b7bedc;
+  }
+
+  .actions {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .actions a {
+    padding: 0.75rem 1.5rem;
+    border-radius: 999px;
+    text-decoration: none;
+    font-weight: 600;
+  }
+
+  .actions .primary {
+    background: #7aa2ff;
+    color: #0b0f18;
+  }
+
+  .actions .secondary {
+    border: 1px solid #2a3350;
+    color: inherit;
+  }
+
+  .card {
+    background: #111827;
+    border: 1px solid #1f2a44;
+    border-radius: 1rem;
+    padding: 1.5rem;
+    max-width: 720px;
+  }
+
+  ul {
+    padding-left: 1.2rem;
+  }
+
+  li {
+    margin-bottom: 0.5rem;
+  }
+</style>
