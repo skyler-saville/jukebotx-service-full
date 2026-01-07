@@ -1,4 +1,4 @@
-.PHONY: bot api dev up up-d build down destroy logs ps restart \
+.PHONY: bot api dev up up-d build down destroy logs ps restart tunnel \
         activity-install activity-dev activity-build activity-shell \
         db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-playlist smoke-audio
 
@@ -7,7 +7,7 @@ SHELL := /bin/bash
 
 PYTHONPATH := apps/bot:apps/api:packages/core:packages/infra
 DC := docker compose
-CORE_SERVICES := db api worker bot activity minio
+CORE_SERVICES := db api worker bot activity minio cloudflared cloudflared-api
 
 # ---- Load .env into Make ----
 # This exports variables so recipes can use $(POSTGRES_USER), etc.
@@ -53,6 +53,9 @@ destroy:
 
 restart:
 	$(DC) restart
+
+tunnel:
+	$(DC) up -d cloudflared cloudflared-api
 
 ps:
 	$(DC) ps

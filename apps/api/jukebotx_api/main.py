@@ -6,10 +6,11 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.websockets import WebSocketException
+from starlette.exceptions import WebSocketException
 from pydantic import BaseModel
 
 from jukebotx_api.auth import (
@@ -66,6 +67,21 @@ app = FastAPI(title="JukeBotx API")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger(__name__)
+startup_settings = load_api_settings()
+cors_origins = [
+    origin.strip()
+    for origin in startup_settings.cors_allowed_origins.split(",")
+    if origin.strip()
+]
+if not cors_origins:
+    cors_origins = ["http://localhost:4321", "https://jukebotx.cortocast.com"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class DiscordActivityExchangeRequest(BaseModel):
@@ -76,6 +92,7 @@ class DiscordActivityExchangeResponse(BaseModel):
     token: str
     token_type: str
     expires_in: int
+    access_token: str
     user_id: str
     username: str
     guild_ids: list[str]
@@ -336,6 +353,7 @@ async def discord_activity_exchange(
         token=token,
         token_type="Bearer",
         expires_in=settings.jwt_ttl_seconds,
+        access_token=access_token,
         user_id=session.user_id,
         username=session.display_name,
         guild_ids=session.guild_ids,

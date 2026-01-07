@@ -51,6 +51,7 @@ export type DiscordActivityExchangeResponse = {
   token: string;
   token_type: string;
   expires_in: number;
+  access_token: string;
   user_id: string;
   username: string;
   guild_ids: string[];
@@ -148,7 +149,15 @@ export class ActivityApiClient {
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? defaultBaseUrl;
     this.tokenStorage = options.tokenStorage ?? createTokenStorage();
-    this.fetcher = options.fetcher ?? fetch;
+    if (options.fetcher) {
+      this.fetcher = options.fetcher;
+    } else {
+      const boundFetch = typeof fetch === "function" ? fetch.bind(globalThis) : undefined;
+      if (!boundFetch) {
+        throw new Error("Global fetch is not available.");
+      }
+      this.fetcher = boundFetch;
+    }
   }
 
   getToken(): string | null {

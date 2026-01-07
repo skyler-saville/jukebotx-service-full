@@ -442,6 +442,9 @@ By default, the app expects Postgres via `DATABASE_URL` (see `.env.example`).
 
 ---
 
+
+---
+
 ## Common issues
 
 ### “Module not found” / imports failing

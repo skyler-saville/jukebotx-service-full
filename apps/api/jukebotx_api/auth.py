@@ -10,7 +10,7 @@ import secrets
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, WebSocket
-from fastapi.websockets import WebSocketException
+from starlette.exceptions import WebSocketException
 from fastapi.responses import RedirectResponse, Response
 import httpx
 

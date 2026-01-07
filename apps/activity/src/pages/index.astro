@@ -5,6 +5,8 @@ const features = [
   "Highlight the currently playing track",
   "Celebrate new submissions",
 ];
+
+import activityScript from "../scripts/activity.ts?url";
 ---
 
 <html lang="en">
@@ -27,6 +29,7 @@ const features = [
           <a class="secondary" href="https://github.com" target="_blank" rel="noreferrer">
             Learn more
           </a>
+          <button class="secondary" id="connect-discord" type="button">Connect Discord</button>
         </div>
       </section>
 
@@ -46,7 +49,31 @@ const features = [
           updates once the endpoints are ready.
         </p>
       </section>
+
+      <section class="card" id="now-playing">
+        <h2>Now Playing</h2>
+        <div class="track">
+          <div class="artwork" aria-hidden="true"></div>
+          <div>
+            <p class="track-title">Waiting for playback...</p>
+            <p class="track-meta">Once connected, the current track will appear here.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="up-next">
+        <h2>Up Next</h2>
+        <p class="status" id="auth-status">Awaiting Discord authentication.</p>
+        <div class="diagnostics" id="diagnostics" hidden>
+          <h3>Diagnostics</h3>
+          <pre id="diagnostics-output">Waiting for connection...</pre>
+        </div>
+        <ul class="queue">
+          <li class="muted">Queue will load after authentication.</li>
+        </ul>
+      </section>
     </main>
+    <script type="module" src={activityScript}></script>
   </body>
 </html>
 
@@ -97,6 +124,16 @@ const features = [
     font-weight: 600;
   }
 
+  .actions button {
+    padding: 0.75rem 1.5rem;
+    border-radius: 999px;
+    font-weight: 600;
+    border: 1px solid #2a3350;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+
   .actions .primary {
     background: #7aa2ff;
     color: #0b0f18;
@@ -121,5 +158,83 @@ const features = [
 
   li {
     margin-bottom: 0.5rem;
+  }
+
+  .track {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 1rem;
+    align-items: center;
+  }
+
+  .artwork {
+    width: 64px;
+    height: 64px;
+    border-radius: 0.75rem;
+    background: #1f2a44;
+    background-size: cover;
+    background-position: center;
+  }
+
+  .track-title {
+    font-size: 1.1rem;
+    margin: 0 0 0.25rem;
+  }
+
+  .track-meta {
+    margin: 0;
+    color: #9aa3bf;
+  }
+
+  .queue {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .queue-title {
+    display: block;
+    font-weight: 600;
+  }
+
+  .queue-meta {
+    display: block;
+    color: #9aa3bf;
+    font-size: 0.9rem;
+  }
+
+  .muted {
+    color: #9aa3bf;
+  }
+
+  .status {
+    color: #9aa3bf;
+    margin: 0 0 1rem;
+  }
+
+  .diagnostics {
+    border: 1px solid #2a3350;
+    border-radius: 0.75rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    background: #0f1627;
+  }
+
+  .diagnostics h3 {
+    margin: 0 0 0.5rem;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #7aa2ff;
+  }
+
+  .diagnostics pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #cbd5f5;
+    font-size: 0.85rem;
   }
 </style>
