@@ -73,11 +73,13 @@ cors_origins = [
     for origin in startup_settings.cors_allowed_origins.split(",")
     if origin.strip()
 ]
+cors_origin_regex = startup_settings.cors_allowed_origin_regex.strip()
 if not cors_origins:
     cors_origins = ["http://localhost:4321", "https://jukebotx.cortocast.com"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

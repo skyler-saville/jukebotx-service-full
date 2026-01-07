@@ -202,6 +202,10 @@ These names may evolve, but the usual suspects are:
 * `OPUS_STORAGE_PUBLIC_BASE_URL` — public base URL for Opus objects (optional)
 * `OPUS_STORAGE_SIGNED_URL_TTL_SECONDS` — TTL for signed URLs
 * `OPUS_STORAGE_TTL_SECONDS` — TTL for objects before refresh
+* `CORS_ALLOWED_ORIGINS` — comma-separated list of allowed browser origins for the API (include the Activity app URL,
+  `https://discord.com`, and any Cloudflared Activity URL used inside Discord).
+* `CORS_ALLOWED_ORIGIN_REGEX` — optional regex for dynamic Discord embeds
+  (for example `https://.*\.discordsays\.com`).
 
 > Do not commit `.env`. The repo should ignore it.
 
@@ -269,6 +273,10 @@ When running the Activity inside Discord, set `PUBLIC_API_BASE_URL` in the root 
 to a publicly reachable API origin (for example the Cloudflared API URL) and rebuild
 the Activity container so the client bundle picks up the new base URL
 (`docker compose build activity`).
+
+If the Activity runs inside Discord or a Cloudflared tunnel, ensure the API CORS settings
+include the Activity origin and Discord embed origins (`CORS_ALLOWED_ORIGINS` and/or
+`CORS_ALLOWED_ORIGIN_REGEX`).
 
 ---
 
