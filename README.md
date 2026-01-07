@@ -265,6 +265,11 @@ npm run dev
 
 The Activity app runs on <http://localhost:4321> by default.
 
+When running the Activity inside Discord, set `PUBLIC_API_BASE_URL` in the root `.env`
+to a publicly reachable API origin (for example the Cloudflared API URL) and rebuild
+the Activity container so the client bundle picks up the new base URL
+(`docker compose build activity`).
+
 ---
 
 ## API endpoints
