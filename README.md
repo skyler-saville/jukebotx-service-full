@@ -23,6 +23,7 @@ This repo is set up so you can:
 
   * [Bot](#bot)
   * [API](#api)
+  * [Activity app](#activity-app)
   * [API endpoints](#api-endpoints)
 * [Commands](#commands)
 * [Smoke tests](#smoke-tests)
@@ -52,6 +53,10 @@ This repo is set up so you can:
 
   * FastAPI service intended to expose ingestion/config/queue endpoints later
   * Currently structured to follow the same domain-first boundaries
+
+* **Activity app** (`apps/activity`)
+
+  * Astro front end for a session activity/landing experience
 
 * **Core domain + use cases** (`packages/core`)
 
@@ -123,6 +128,12 @@ jukebotx-service-full/
 │     ├─ Dockerfile
 │     └─ jukebotx_api/
 │        └─ main.py
+│  └─ activity/
+│     ├─ astro.config.mjs
+│     ├─ package.json
+│     └─ src/
+│        └─ pages/
+│           └─ index.astro
 ├─ packages/
 │  ├─ core/
 │  │  └─ jukebotx_core/
@@ -241,6 +252,18 @@ Or manually:
 PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
 poetry run uvicorn jukebotx_api.main:app --reload
 ```
+
+---
+
+## Activity app
+
+```bash
+cd apps/activity
+npm install
+npm run dev
+```
+
+The Activity app runs on <http://localhost:4321> by default.
 
 ---
 
