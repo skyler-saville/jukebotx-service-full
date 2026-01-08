@@ -2,7 +2,7 @@
 
 A mono-repo for **JukeBotx**: a Discord music bot + companion API, built with a clean architecture mindset (domain-first, ports/adapters, use cases) and an “HTTP-only ingestion” approach for Suno links.
 
-This repo is set up so you can:
+Use this repo to:
 
 * run the bot locally,
 * run the API locally,
@@ -94,11 +94,11 @@ This project follows a **clean architecture / DDD-ish** approach:
 * Infra implements those ports.
 * Apps (bot/api) depend on core and wire in infra.
 
-### Why this matters (practically)
+### Practical implications
 
-* You can unit test use cases with fake ports.
-* You can swap infra (in-memory vs Redis vs Postgres) without touching core.
-* Discord logic stays in the bot layer, not mixed into domain logic.
+* Enables unit testing use cases with fake ports.
+* Allows swapping infra (in-memory vs Redis vs Postgres) without touching core.
+* Keeps Discord logic in the bot layer, not mixed into domain logic.
 
 ---
 
@@ -181,7 +181,7 @@ poetry install
 
 ## Environment variables
 
-You should **copy** `.env.example` to `.env` (or use the dev/prod templates):
+Copy `.env.example` to `.env` (or use the dev/prod templates):
 
 ```bash
 cp .env.example .env
@@ -189,7 +189,7 @@ cp .env.example .env
 
 ### Common env vars (expected)
 
-These names may evolve, but the usual suspects are:
+Common keys:
 
 * `DISCORD_TOKEN` — Discord bot token
 * `DISCORD_GUILD_ID` — optional, for dev/testing slash command sync
@@ -273,13 +273,13 @@ This repo uses a multi-package layout. Most commands assume:
 PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra
 ```
 
-You typically won’t type that manually—use `make` targets.
+Most commands assume this; prefer `make` targets.
 
 ---
 
 ## Bot
 
-Example (exact target names may differ based on your Makefile):
+Example (target names may differ by Makefile):
 
 ```bash
 make bot
@@ -373,7 +373,7 @@ The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/
 
 ### Voice + queue
 
-* `;join` — join your current voice channel
+* `;join` — join the current voice channel
 * `;leave` — disconnect and reset the session
 * `;playlist <url>` — queue tracks from a Suno playlist URL
 * `;q` — show now playing + next up
@@ -420,7 +420,7 @@ PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
 poetry run python scripts/smoke_suno_client.py "https://suno.com/s/..."
 ```
 
-**What you should expect:**
+**Expected behavior:**
 
 * `Title`, `Artist`, `Artist Username`
 * `MP3` and `Image` from OpenGraph tags (reliable)
@@ -457,7 +457,7 @@ Keep commits small and stack them locally before pushing:
 
 ### Avoid polluting git with caches
 
-If you see `__pycache__` or `*.pyc` in your repo tree:
+If `__pycache__` or `*.pyc` show up in the repo tree:
 
 * confirm `.gitignore` ignores them
 * delete them:
@@ -471,7 +471,7 @@ find . -type f -name "*.pyc" -delete
 
 ## Make targets
 
-Your repo already uses Make (good). Typical targets to include:
+Typical targets:
 
 * `make install` — `poetry install`
 * `make bot` — run bot
@@ -485,19 +485,19 @@ Your repo already uses Make (good). Typical targets to include:
 * `make logs` / `make ps` / `make restart` — Compose status helpers
 * `make db-shell` / `make db-reset` / `make db-backup` / `make db-restore` — Postgres helpers
 
-If a target doesn’t exist yet, add it—Make is your “team interface” even if the team is just you.
+Add or remove targets as needed for the current workflow.
 
 ---
 
 ## Docker
 
-If you’re using Docker Compose, typical commands:
+Typical Docker Compose commands:
 
 ```bash
 docker compose up --build
 ```
 
-You’ll likely run either:
+Common services to run:
 
 * `bot` service
 * `api` service
@@ -506,8 +506,6 @@ You’ll likely run either:
 By default, the app expects Postgres via `DATABASE_URL` (see `.env.example`).
 
 ---
-
-
 ---
 
 ## Common issues
@@ -516,14 +514,14 @@ By default, the app expects Postgres via `DATABASE_URL` (see `.env.example`).
 
 This repo relies on `PYTHONPATH` pointing at `apps/*` and `packages/*`.
 
-Use `make ...` commands so you don’t forget it.
+Prefer `make ...` commands so the environment is consistent.
 
 ### Lyrics sometimes show `None`
 
 That’s expected.
 Suno pages frequently return server HTML without hydrated DOM elements. Lyrics can appear in:
 
-* Next.js streaming payload (`self.__next_f.push([...])`) ✅ (what your current solution targets)
+* Next.js streaming payload (`self.__next_f.push([...])`)
 * embedded JSON (`__NEXT_DATA__`) sometimes
 * rarely in DOM paragraphs when fully rendered
 
@@ -531,41 +529,53 @@ Also: some songs are truly instrumental or don’t expose lyrics via the payload
 
 ### Don’t commit `.env`
 
-If you accidentally staged it:
+If `.env` was staged by accident:
 
 ```bash
 git restore --staged .env
 ```
 
-If you committed secrets, rotate them.
+If secrets were committed, rotate them.
 
 ---
 
 ## Roadmap
 
-Short-term (high confidence):
+### Done
 
-* Wire Suno ingestion into a core use case (`ingest_suno_links`)
-* Add an in-memory queue repo adapter (already implied)
-* Improve Suno lyric extraction heuristics and add tests for multiple URL types
+- [x] Bot + API + Activity app wired in a single mono-repo
+- [x] Activity frontend (Astro) with Discord Embedded SDK auth flow
+- [x] Activity API endpoints (now playing, queue, state, reactions)
+- [x] Docker Compose for core services + cloudflared tunnel services
+- [x] Environment templates for dev/prod and per-app configs
+- [x] API CORS configuration for Activity + Discord embeds
 
-Mid-term:
+### In progress
 
-* Add persistence (Redis or Postgres) behind repository ports
-* Add API endpoints for queue/config operations
-* Add structured logging and correlation IDs
+- [ ] Stabilize Discord Activity auth flow and improve diagnostics
+- [ ] Harden queue/now-playing polling and error handling
+- [ ] Add more Activity UI states (empty queue, errors, loading)
 
-Long-term:
+### Next
 
-* Multi-guild config support with a real config repository
-* Better audio pipeline and voice stability (FFmpeg lifecycle management)
-* Observability: metrics + health checks
+- [ ] Wire Suno ingestion into a core use case (`ingest_suno_links`)
+- [ ] Add an in-memory queue repo adapter
+- [ ] Improve Suno lyric extraction heuristics and add tests for multiple URL types
+- [ ] Add API endpoints for queue/config operations
+- [ ] Add structured logging and correlation IDs
+
+### Future
+
+- [ ] Add persistence (Redis or Postgres) behind repository ports
+- [ ] Multi-guild config support with a real config repository
+- [ ] Better audio pipeline and voice stability (FFmpeg lifecycle management)
+- [ ] Observability: metrics + health checks
 
 ---
 
 ## Contributing
 
-If you want outside contributions later:
+Contribution guidelines:
 
 * require PRs
 * require `make lint` + `make test`
