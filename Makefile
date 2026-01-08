@@ -1,4 +1,4 @@
-.PHONY: bot api dev up up-d build down destroy logs ps restart tunnel \
+.PHONY: help bot api dev up up-d up-dev up-dev-d up-prod up-prod-d build down destroy logs ps restart tunnel \
         activity-install activity-dev activity-build activity-shell \
         db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-playlist smoke-audio
 
@@ -7,13 +7,44 @@ SHELL := /bin/bash
 
 PYTHONPATH := apps/bot:apps/api:packages/core:packages/infra
 DC := docker compose
-CORE_SERVICES := db api worker bot activity minio cloudflared cloudflared-api
+
+# ---- Compose layering & env files ----
+# - Default stack: docker-compose.yml + .env
+# - Dev stack: docker-compose.yml + docker-compose.dev.yml + .env.development
+# - Prod stack: docker-compose.yml + docker-compose.prod.yml + .env.production
+# - Tunnel stack: docker-compose.yml + docker-compose.tunnel.yml
+ENV_FILE ?= .env
+COMPOSE_FILES ?= -f docker-compose.yml
+DEV_COMPOSE_FILES := -f docker-compose.yml -f docker-compose.dev.yml
+PROD_COMPOSE_FILES := -f docker-compose.yml -f docker-compose.prod.yml
+TUNNEL_COMPOSE_FILES := -f docker-compose.yml -f docker-compose.tunnel.yml
+DEV_ENV_FILE := .env.development
+PROD_ENV_FILE := .env.production
+CORE_SERVICES := db api worker bot activity minio
+DEV_SERVICES := db api minio
+
+# ---- Usage ----
+# make up-dev      # dev stack (db/api/minio)
+# make up-prod     # prod stack (full services)
+# make tunnel      # start cloudflared with tunnel compose layer
+# make up COMPOSE_FILES="-f docker-compose.yml -f docker-compose.tunnel.yml" ENV_FILE=.env
+help:
+	@echo "Make targets:"
+	@echo "  up / up-d          Start full stack with COMPOSE_FILES + ENV_FILE"
+	@echo "  up-dev / up-dev-d  Start dev stack (db/api/minio) with .env.development"
+	@echo "  up-prod / up-prod-d Start prod stack with .env.production"
+	@echo "  tunnel             Start cloudflared services with tunnel compose layer"
+	@echo "  api / bot          Run local python services with PYTHONPATH"
 
 # ---- Load .env into Make ----
 # This exports variables so recipes can use $(POSTGRES_USER), etc.
-ifneq (,$(wildcard .env))
-	include .env
+ifneq (,$(wildcard $(ENV_FILE)))
+	include $(ENV_FILE)
 	export
+endif
+
+ifneq (,$(wildcard $(ENV_FILE)))
+	DC_ENV_OPT := --env-file $(ENV_FILE)
 endif
 
 # Optional sanity defaults (only used if .env missing)
@@ -32,36 +63,48 @@ api:
 
 # -------- Docker --------
 build:
-	$(DC) build
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) build
 
 up:
-	$(DC) up --build $(CORE_SERVICES)
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) up --build $(CORE_SERVICES)
 
 up-d:
-	$(DC) up -d --build $(CORE_SERVICES)
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) up -d --build $(CORE_SERVICES)
 
 dev:
-	$(DC) up --build $(CORE_SERVICES)
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) up --build $(CORE_SERVICES)
+
+up-dev:
+	$(MAKE) up ENV_FILE=$(DEV_ENV_FILE) COMPOSE_FILES="$(DEV_COMPOSE_FILES)" CORE_SERVICES="$(DEV_SERVICES)"
+
+up-dev-d:
+	$(MAKE) up-d ENV_FILE=$(DEV_ENV_FILE) COMPOSE_FILES="$(DEV_COMPOSE_FILES)" CORE_SERVICES="$(DEV_SERVICES)"
+
+up-prod:
+	$(MAKE) up ENV_FILE=$(PROD_ENV_FILE) COMPOSE_FILES="$(PROD_COMPOSE_FILES)"
+
+up-prod-d:
+	$(MAKE) up-d ENV_FILE=$(PROD_ENV_FILE) COMPOSE_FILES="$(PROD_COMPOSE_FILES)"
 
 down:
 	# Safe: preserves named volumes (your Postgres data)
-	$(DC) down
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) down
 
 destroy:
 	# Destructive: removes volumes (wipes Postgres data)
-	$(DC) down -v --remove-orphans
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) down -v --remove-orphans
 
 restart:
-	$(DC) restart
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) restart
 
 tunnel:
-	$(DC) up -d cloudflared cloudflared-api
+	$(DC) $(TUNNEL_COMPOSE_FILES) $(DC_ENV_OPT) up -d cloudflared cloudflared-api
 
 ps:
-	$(DC) ps
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) ps
 
 logs:
-	$(DC) logs -f
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) logs -f
 
 # -------- Activity (Astro) --------
 activity-install:
@@ -79,7 +122,7 @@ activity-shell:
 # -------- Database helpers --------
 db-shell:
 	# psql session inside the container, using .env vars
-	$(DC) exec -it db psql -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)"
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) exec -it db psql -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)"
 
 db-reset:
 	# Wipes the database volume and starts fresh (use intentionally)
@@ -89,7 +132,7 @@ db-reset:
 db-backup:
 	# Creates a compressed custom-format dump to ./backups
 	mkdir -p backups
-	$(DC) exec -T db pg_dump \
+	$(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) exec -T db pg_dump \
 		-U "$(POSTGRES_USER)" \
 		-d "$(POSTGRES_DB)" \
 		--format=custom \
@@ -98,7 +141,7 @@ db-backup:
 # Usage: make db-restore FILE=backups/jukebotx_YYYYmmdd_HHMMSS.dump
 db-restore:
 	test -n "$(FILE)" || (echo "FILE is required. Example: make db-restore FILE=backups/$(POSTGRES_DB)_YYYYmmdd_HHMMSS.dump" && exit 1)
-	cat "$(FILE)" | $(DC) exec -T db pg_restore \
+	cat "$(FILE)" | $(DC) $(COMPOSE_FILES) $(DC_ENV_OPT) exec -T db pg_restore \
 		-U "$(POSTGRES_USER)" \
 		-d "$(POSTGRES_DB)" \
 		--clean --if-exists

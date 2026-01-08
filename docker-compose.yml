@@ -75,19 +75,6 @@ services:
     ports:
       - "6379:6379"
 
-  cloudflared:
-    image: cloudflare/cloudflared:2024.6.1
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
-    depends_on:
-      - api
-      - activity
-
-  cloudflared-api:
-    image: cloudflare/cloudflared:2024.6.1
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_API_TOKEN}
-    depends_on:
-      - api
-
 volumes:
   pgdata:
   minio_data:

@@ -1,0 +1,16 @@
+services:
+  api:
+    env_file:
+      - .env.production
+
+  worker:
+    env_file:
+      - .env.production
+
+  bot:
+    env_file:
+      - .env.production
+
+  activity:
+    env_file:
+      - .env.production

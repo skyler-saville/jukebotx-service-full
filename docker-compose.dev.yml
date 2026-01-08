@@ -1,0 +1,22 @@
+services:
+  api:
+    env_file:
+      - .env.development
+
+  worker:
+    env_file:
+      - .env.development
+    profiles:
+      - worker
+
+  bot:
+    env_file:
+      - .env.development
+    profiles:
+      - bot
+
+  activity:
+    env_file:
+      - .env.development
+    profiles:
+      - activity
