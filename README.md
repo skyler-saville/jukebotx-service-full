@@ -19,6 +19,9 @@ This repo is set up so you can:
 * [Repository layout](#repository-layout)
 * [Local setup](#local-setup)
 * [Environment variables](#environment-variables)
+* [Quickstart matrix](#quickstart-matrix)
+* [Env files map](#env-files-map)
+* [Ports and URLs](#ports-and-urls)
 * [Run locally](#run-locally)
 
   * [Bot](#bot)
@@ -48,15 +51,18 @@ This repo is set up so you can:
   * FFmpeg-backed audio playback in voice channels
   * Auto-ingests Suno links into Postgres when the bot is active in a guild
   * Uses core use-cases to avoid bot-specific business logic
+  * See `apps/bot/README.md` for bot-specific setup
 
 * **API** (`apps/api`)
 
   * FastAPI service intended to expose ingestion/config/queue endpoints later
   * Currently structured to follow the same domain-first boundaries
+  * See `apps/api/README.md` for API setup and docs
 
 * **Activity app** (`apps/activity`)
 
   * Astro front end for a session activity/landing experience
+  * See `apps/activity/README.md` for front-end specific setup
 
 * **Core domain + use cases** (`packages/core`)
 
@@ -175,7 +181,7 @@ poetry install
 
 ## Environment variables
 
-You should **copy** `.env.example` to `.env`:
+You should **copy** `.env.example` to `.env` (or use the dev/prod templates):
 
 ```bash
 cp .env.example .env
@@ -208,6 +214,52 @@ These names may evolve, but the usual suspects are:
   (for example `https://.*\.discordsays\.com`).
 
 > Do not commit `.env`. The repo should ignore it.
+
+---
+
+## Quickstart matrix
+
+**Local (Docker backend + local Activity)**
+
+```bash
+cp .env.development.example .env.development
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+make activity-dev
+```
+
+**All-in-Docker (includes Activity)**
+
+```bash
+cp .env.development.example .env.development
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+**Tunnels (two hostnames)**
+
+```bash
+cp .env.production.example .env.production
+docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
+```
+
+---
+
+## Env files map
+
+* `.env` — current local runtime config (used by default compose + make targets).
+* `.env.development.example` / `.env.production.example` — templates for dev/prod.
+* `.env.development` / `.env.production` — actual envs used with `docker-compose.dev.yml` or `docker-compose.prod.yml`.
+* `apps/activity/.env` — local Activity frontend envs (public, browser-exposed).
+* `apps/activity/.env.example` / `apps/activity/.env.production.example` — Activity templates.
+
+---
+
+## Ports and URLs
+
+* Activity app: `http://localhost:4321`
+* API (host): `http://localhost:8001`
+* API (container network): `http://api:8000`
+* Postgres: `localhost:5432`
+* MinIO: `http://localhost:9000` (S3), `http://localhost:9001` (console)
 
 ---
 
