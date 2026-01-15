@@ -355,6 +355,7 @@ class JukeBot(commands.Bot):
                     "`;autoplay` — Enable autoplay until the queue ends.\n"
                     "`;autoplay <count>` — Play the next N tracks.\n"
                     "`;autoplay off` — Disable autoplay.\n"
+                    "`;cooldown` / `;cooldown <minutes>` / `;cooldown off` — Toggle submission cooldown.\n"
                     "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
                 ),
                 inline=False,
@@ -369,8 +370,12 @@ class JukeBot(commands.Bot):
 
         @self.command(name="join")
         async def join(ctx: commands.Context) -> None:
-            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+            if ctx.guild is None:
                 await ctx.send("This command can only be used in a server.")
+                return
+
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
                 return
 
             if ctx.author.voice is None or ctx.author.voice.channel is None:
@@ -397,6 +402,10 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.reset()
 
@@ -415,8 +424,12 @@ class JukeBot(commands.Bot):
 
         @self.command(name="setlist")
         async def setlist(ctx: commands.Context) -> None:
-            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+            if ctx.guild is None:
                 await ctx.send("This command can only be used in a server.")
+                return
+
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
                 return
 
             if ctx.author.voice is None or ctx.author.voice.channel is None:
@@ -504,6 +517,10 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.submissions_open = True
             session.reset_submission_counts()
@@ -515,6 +532,10 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.submissions_open = False
             await ctx.send("Submissions are closed.")
@@ -523,6 +544,10 @@ class JukeBot(commands.Bot):
         async def web(ctx: commands.Context) -> None:
             if ctx.guild is None:
                 await ctx.send("This command can only be used in a server.")
+                return
+
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
                 return
 
             if self.settings.web_base_url is None:
@@ -861,6 +886,41 @@ class JukeBot(commands.Bot):
             session.now_playing_channel_id = ctx.channel.id
             session.set_autoplay(remaining)
             await ctx.send(f"Autoplay enabled for the next {remaining} track(s).")
+
+        @self.command(name="cooldown")
+        async def cooldown(ctx: commands.Context, value: Optional[str] = None) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            session = self._get_session(ctx).for_guild(ctx.guild.id)
+
+            if value is None or value.lower() == "on":
+                session.submission_cooldown_seconds = 15 * 60
+                await ctx.send("Submission cooldown set to 15 minutes.")
+                return
+
+            if value.lower() == "off":
+                session.submission_cooldown_seconds = 0
+                await ctx.send("⚠️ Submission cooldown has been deactivated.")
+                return
+
+            try:
+                minutes = int(value)
+            except ValueError:
+                await ctx.send("Cooldown value must be a number of minutes or 'off'.")
+                return
+
+            if minutes < 1:
+                await ctx.send("Cooldown minutes must be at least 1.")
+                return
+
+            session.submission_cooldown_seconds = minutes * 60
+            await ctx.send(f"Submission cooldown set to {minutes} minute(s).")
 
         @self.command(name="dj")
         async def dj(ctx: commands.Context, value: Optional[str] = None) -> None:

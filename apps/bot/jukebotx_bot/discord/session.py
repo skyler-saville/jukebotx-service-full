@@ -23,7 +23,7 @@ class SessionState:
     submissions_open: bool = True
     per_user_limit: int | None = None
     per_user_counts: dict[int, int] = field(default_factory=dict)
-    submission_cooldown_seconds: int = 30
+    submission_cooldown_seconds: int = 15 * 60
     last_submission_at: dict[int, float] = field(default_factory=dict)
     autoplay_enabled: bool = False
     autoplay_remaining: int | None = None
