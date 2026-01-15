@@ -308,6 +308,7 @@ class JukeBot(commands.Bot):
     def _register_commands(self) -> None:
         @self.command(name="help")
         async def help_command(ctx: commands.Context) -> None:
+            is_mod = isinstance(ctx.author, discord.Member) and _is_mod(ctx.author)
             embed = discord.Embed(
                 title="JukeBotx Help",
                 description=(
@@ -315,13 +316,13 @@ class JukeBot(commands.Bot):
                     "Drop Suno links in chat to queue when submissions are open. "
                     "Use `;playlist <url>` for Suno playlists (mods only)."
                 ),
-                color=discord.Color.blurple(),
+                color=discord.Color.orange() if is_mod else discord.Color.blurple(),
             )
             embed.add_field(
                 name="Session",
                 value=(
-                    "`;join` — Join your voice channel.\n"
-                    "`;leave` — Leave and reset the session.\n"
+                    "`;join` — Join your voice channel (mods).\n"
+                    "`;leave` — Leave and reset the session (mods).\n"
                     "`;open` / `;close` — Toggle submissions (mods).\n"
                     "`;web` — Share the session web URL.\n"
                     "`;setlist` — DM the current session setlist."
@@ -339,32 +340,33 @@ class JukeBot(commands.Bot):
                 ),
                 inline=False,
             )
-            embed.add_field(
-                name="Queue Management (mods)",
-                value=(
-                    "`;playlist <url>` — Queue a Suno playlist and close submissions.\n"
-                    "`;clear` — Clear the queue.\n"
-                    "`;remove <index>` — Remove a queued item.\n"
-                    "`;limit <count>` — Set per-user submission limit."
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="Autoplay + DJ Mode (mods)",
-                value=(
-                    "`;autoplay` — Enable autoplay until the queue ends.\n"
-                    "`;autoplay <count>` — Play the next N tracks.\n"
-                    "`;autoplay off` — Disable autoplay.\n"
-                    "`;cooldown` / `;cooldown <minutes>` / `;cooldown off` — Toggle submission cooldown.\n"
-                    "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="Announcements (mods)",
-                value="`;ping here <message>` or `;ping jamsession <message>` — Ping channels/roles.",
-                inline=False,
-            )
+            if is_mod:
+                embed.add_field(
+                    name="Queue Management (mods)",
+                    value=(
+                        "`;playlist <url>` — Queue a Suno playlist and close submissions.\n"
+                        "`;clear` — Clear the queue.\n"
+                        "`;remove <index>` — Remove a queued item.\n"
+                        "`;limit <count>` — Set per-user submission limit."
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Autoplay + DJ Mode (mods)",
+                    value=(
+                        "`;autoplay` — Enable autoplay until the queue ends.\n"
+                        "`;autoplay <count>` — Play the next N tracks.\n"
+                        "`;autoplay off` — Disable autoplay.\n"
+                        "`;cooldown` / `;cooldown <minutes>` / `;cooldown off` — Toggle submission cooldown.\n"
+                        "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Announcements (mods)",
+                    value="`;ping here <message>` or `;ping jamsession <message>` — Ping channels/roles.",
+                    inline=False,
+                )
             embed.set_footer(text="Need help? Ask a mod or use ;help anytime.")
             await ctx.send(embed=embed)
 
