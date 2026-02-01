@@ -29,7 +29,7 @@ class SunoTrackData:
 
     @property
     def media_url(self) -> str | None:
-        return self.video_url or self.image_url
+        return self.image_url or self.video_url
 
 
 class SunoScrapeError(RuntimeError):
@@ -71,7 +71,7 @@ def _parse_meta_tags(page_html: str) -> dict[str, str]:
     tags: dict[str, str] = {}
     for m in _META_TAG_RE.finditer(page_html):
         key = m.group("key").strip()
-        val = m.group("val").strip()
+        val = html_lib.unescape(m.group("val").strip())
         if key and val:
             tags[key] = val
     return tags
@@ -246,8 +246,10 @@ def _parse_title_artist_from_description(description: str | None) -> tuple[str |
 
     # Trim promo sentence if present
     promo = "listen and make your own on suno"
-    if promo in right.lower():
-        right = right.split(".", 1)[0].strip()
+    lowered_right = right.lower()
+    promo_index = lowered_right.find(promo)
+    if promo_index != -1:
+        right = right[:promo_index].rstrip(" .").strip()
 
     artist_display = right.strip() or None
     return song_title, artist_display, artist_username

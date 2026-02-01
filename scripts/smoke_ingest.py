@@ -3,19 +3,19 @@ from __future__ import annotations
 import asyncio
 
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
-from jukebotx_infra.repos.memory import (
-    InMemoryQueueRepository,
-    InMemorySubmissionRepository,
-    InMemoryTrackRepository,
-)
+from jukebotx_infra.db import async_session_factory, init_db
+from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
+from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
+from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 from jukebotx_infra.suno.client import HttpxSunoClient
 
 
 async def main() -> None:
     suno = HttpxSunoClient()
-    tracks = InMemoryTrackRepository()
-    submissions = InMemorySubmissionRepository()
-    queue = InMemoryQueueRepository()
+    await init_db()
+    tracks = PostgresTrackRepository(async_session_factory)
+    submissions = PostgresSubmissionRepository(async_session_factory)
+    queue = PostgresQueueRepository(async_session_factory)
 
     ingest = IngestSunoLink(
         suno_client=suno,

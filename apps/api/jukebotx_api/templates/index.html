@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JukeBotx</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>JukeBotx API</h1>
+        <p class="subtitle">Quick links for the API endpoints and Discord login.</p>
+      </header>
+
+      {% if session %}
+        <section class="card">
+          <h2>Welcome back, {{ session.display_name }}!</h2>
+          <p>Your session is active. Use the links below to browse queues.</p>
+          {% if guild_ids %}
+            <ul class="link-list">
+              {% for guild_id in guild_ids %}
+                <li>
+                  <span class="guild">Guild {{ guild_id }}</span>
+                  <a href="/guilds/{{ guild_id }}/queue">Queue preview</a>
+                  <a href="/guilds/{{ guild_id }}/queue/next">Next queue item</a>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p>No guilds are available on your session.</p>
+          {% endif %}
+        </section>
+
+        <section class="card">
+          <h2>Session tracks lookup</h2>
+          <p>Enter a guild and channel ID to inspect session tracks.</p>
+          <form id="session-form" class="form-row">
+            <label>
+              Guild ID
+              <input type="text" name="guild_id" placeholder="1234567890" required />
+            </label>
+            <label>
+              Channel ID
+              <input type="text" name="channel_id" placeholder="0987654321" required />
+            </label>
+            <button type="submit">Open session tracks</button>
+          </form>
+          <p class="hint">Endpoint: <code>/guilds/&lt;guild_id&gt;/channels/&lt;channel_id&gt;/session/tracks</code></p>
+        </section>
+
+        <section class="card">
+          <form method="post" action="/auth/logout">
+            <button type="submit" class="secondary">Log out</button>
+          </form>
+        </section>
+      {% else %}
+        <section class="card">
+          <h2>Get started</h2>
+          <p>Log in with Discord to access your guild queues.</p>
+          <a class="primary" href="/auth/discord/login">Login with Discord</a>
+        </section>
+      {% endif %}
+    </main>
+    <script>
+      const form = document.getElementById("session-form");
+      if (form) {
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const guildId = form.guild_id.value.trim();
+          const channelId = form.channel_id.value.trim();
+          if (!guildId || !channelId) {
+            return;
+          }
+          window.location.href = `/guilds/${guildId}/channels/${channelId}/session/tracks`;
+        });
+      }
+    </script>
+  </body>
+</html>

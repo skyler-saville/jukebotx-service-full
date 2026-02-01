@@ -20,6 +20,10 @@ class Track:
     image_url: str | None
     video_url: str | None
     mp3_url: str | None
+    opus_url: str | None
+    opus_path: str | None
+    opus_status: str | None
+    opus_transcoded_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -36,6 +40,18 @@ class Submission:
     message_id: int
     author_id: int
     submitted_at: datetime
+
+
+@dataclass(frozen=True)
+class SubmissionTrackInfo:
+    """
+    Track details joined to a submission for setlist exports.
+    """
+    track_id: UUID
+    artist_display: str | None
+    title: str | None
+    suno_url: str
+    mp3_url: str | None
 
 
 @dataclass(frozen=True)
@@ -63,6 +79,10 @@ class TrackUpsert:
     image_url: str | None
     video_url: str | None
     mp3_url: str | None
+    opus_url: str | None = None
+    opus_path: str | None = None
+    opus_status: str | None = None
+    opus_transcoded_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -81,11 +101,39 @@ class QueueItemCreate:
     requested_by: int
 
 
+@dataclass(frozen=True)
+class OpusJob:
+    id: UUID
+    track_id: UUID
+    mp3_url: str
+    status: str
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class OpusJobCreate:
+    track_id: UUID
+    mp3_url: str
+
+
 class TrackRepository:
     async def get_by_suno_url(self, suno_url: str) -> Track | None:
         raise NotImplementedError
 
     async def upsert(self, data: TrackUpsert) -> Track:
+        raise NotImplementedError
+
+    async def update_opus_metadata(
+        self,
+        *,
+        track_id: UUID,
+        opus_url: str | None,
+        opus_path: str | None,
+        opus_status: str | None,
+        opus_transcoded_at: datetime | None,
+    ) -> Track:
         raise NotImplementedError
 
 
@@ -97,6 +145,23 @@ class SubmissionRepository:
         raise NotImplementedError
 
     async def create(self, data: SubmissionCreate) -> Submission:
+        raise NotImplementedError
+
+
+class OpusJobRepository:
+    async def get_by_track_id(self, *, track_id: UUID) -> OpusJob | None:
+        raise NotImplementedError
+
+    async def enqueue(self, data: OpusJobCreate) -> OpusJob:
+        raise NotImplementedError
+
+    async def fetch_next_pending(self) -> OpusJob | None:
+        raise NotImplementedError
+
+    async def mark_completed(self, *, job_id: UUID) -> None:
+        raise NotImplementedError
+
+    async def mark_failed(self, *, job_id: UUID, error: str) -> None:
         raise NotImplementedError
 
 

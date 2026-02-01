@@ -23,6 +23,7 @@ This repo is set up so you can:
 
   * [Bot](#bot)
   * [API](#api)
+  * [API endpoints](#api-endpoints)
 * [Commands](#commands)
 * [Smoke tests](#smoke-tests)
 * [Development workflow](#development-workflow)
@@ -178,6 +179,18 @@ These names may evolve, but the usual suspects are:
 * `LOG_LEVEL` — e.g. `INFO`
 * `DATABASE_URL` — async SQLAlchemy DSN (defaults to local Postgres)
 * `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — used by Docker Compose
+* `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI` — OAuth config for the API
+* `API_SESSION_SECRET`, `API_SESSION_TTL_SECONDS` — cookie signing + TTL for OAuth sessions
+* `OPUS_CACHE_DIR`, `OPUS_CACHE_TTL_SECONDS` — local Opus cache location + TTL (API)
+* `OPUS_API_BASE_URL` — base URL for the bot to request cached Opus audio (e.g., `http://localhost:8001`)
+* `OPUS_STORAGE_PROVIDER` — set to `s3` to enable object storage for Opus files
+* `OPUS_STORAGE_BUCKET` — bucket for Opus files (MinIO/S3)
+* `OPUS_STORAGE_PREFIX` — prefix for Opus objects (defaults to `opus`)
+* `OPUS_STORAGE_ENDPOINT_URL` — S3 endpoint URL (e.g., `http://localhost:9000` for MinIO)
+* `OPUS_STORAGE_ACCESS_KEY_ID`, `OPUS_STORAGE_SECRET_ACCESS_KEY` — S3 credentials
+* `OPUS_STORAGE_PUBLIC_BASE_URL` — public base URL for Opus objects (optional)
+* `OPUS_STORAGE_SIGNED_URL_TTL_SECONDS` — TTL for signed URLs
+* `OPUS_STORAGE_TTL_SECONDS` — TTL for objects before refresh
 
 > Do not commit `.env`. The repo should ignore it.
 
@@ -231,6 +244,41 @@ poetry run uvicorn jukebotx_api.main:app --reload
 
 ---
 
+## API endpoints
+
+The API currently exposes read-only queue/session endpoints plus Discord OAuth for
+authenticated access. All endpoints below require a valid `jukebotx_session` cookie
+unless otherwise noted.
+
+### Auth + session
+
+* `GET /healthz` — basic health check (no auth required).
+* `GET /auth/discord/login` — starts Discord OAuth flow (redirects to Discord).
+* `GET /auth/discord/callback` — OAuth callback (sets `jukebotx_session` cookie).
+* `POST /auth/logout` — clears session cookie and redirects to `/`.
+* `GET /auth/me` — returns the authenticated user profile payload.
+
+### Queue + tracks
+
+* `GET /guilds/{guild_id}/queue?limit=10` — queue preview for a guild.
+* `GET /guilds/{guild_id}/queue/next` — next unplayed queue item (if any).
+* `GET /guilds/{guild_id}/channels/{channel_id}/session/tracks` — tracks submitted in a session channel.
+* `GET /tracks/{track_id}` — track metadata by ID.
+* `GET /tracks/{track_id}/audio` — redirects to the track MP3 URL (404 if missing).
+* `GET /tracks/{track_id}/opus` — serves cached Opus audio for the track. Cached files are stored at
+  `static/opus/{track_id}.opus` for up to `OPUS_CACHE_TTL_SECONDS` seconds before being re-transcoded.
+  When `OPUS_STORAGE_PROVIDER=s3`, the API redirects to MinIO/S3 instead.
+
+### Auth requirements
+
+* The API expects Discord OAuth configuration to be present (`DISCORD_OAUTH_CLIENT_ID`,
+  `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI`,
+  `DISCORD_GUILD_ID`, `API_SESSION_SECRET`).
+* Requests are authorized against the guild IDs in the session payload; non-members
+  receive a `403`.
+
+---
+
 ## Commands
 
 The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/main.py`).
@@ -255,6 +303,10 @@ The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/
 * `;limit <count>` — set per-user submission limit (mod-only)
 * `;autoplay [count|off]` — auto-play up to `count` tracks or until empty (mod-only)
 * `;dj [count|off]` — DJ mode for `count` tracks or until empty (mod-only)
+
+### Web UI
+
+* `;web` / `;sessionurl` — post the session UI link (requires `WEB_BASE_URL`)
 
 ### Announcements
 

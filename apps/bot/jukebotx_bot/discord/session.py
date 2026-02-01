@@ -8,12 +8,14 @@ import time
 @dataclass
 class Track:
     audio_url: str
+    opus_url: str | None
     page_url: str | None
     title: str
     artist_display: str | None
     media_url: str | None
     requester_id: int
     requester_name: str
+    duration_seconds: float | None = None
 
 
 @dataclass
@@ -21,6 +23,8 @@ class SessionState:
     submissions_open: bool = True
     per_user_limit: int | None = None
     per_user_counts: dict[int, int] = field(default_factory=dict)
+    submission_cooldown_seconds: int = 15 * 60
+    last_submission_at: dict[int, float] = field(default_factory=dict)
     autoplay_enabled: bool = False
     autoplay_remaining: int | None = None
     dj_enabled: bool = False
@@ -34,6 +38,7 @@ class SessionState:
         self.submissions_open = True
         self.per_user_limit = None
         self.per_user_counts.clear()
+        self.last_submission_at.clear()
         self.autoplay_enabled = False
         self.autoplay_remaining = None
         self.dj_enabled = False
@@ -48,6 +53,23 @@ class SessionState:
 
     def reset_submission_counts(self) -> None:
         self.per_user_counts.clear()
+        self.last_submission_at.clear()
+
+    def cooldown_remaining(self, user_id: int, *, now: float | None = None) -> float:
+        if self.submission_cooldown_seconds <= 0:
+            return 0.0
+
+        last = self.last_submission_at.get(user_id)
+        if last is None:
+            return 0.0
+
+        current = now if now is not None else time.monotonic()
+        remaining = self.submission_cooldown_seconds - (current - last)
+        return max(0.0, remaining)
+
+    def mark_submission(self, user_id: int, *, now: float | None = None) -> None:
+        current = now if now is not None else time.monotonic()
+        self.last_submission_at[user_id] = current
 
     def set_autoplay(self, remaining: int | None) -> None:
         if remaining is None:

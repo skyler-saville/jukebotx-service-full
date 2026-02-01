@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
+import math
+import os
+import re
+import tempfile
+import asyncio
 from typing import Optional
+from uuid import UUID
 
 import discord
 from discord.ext import commands
+import httpx
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
@@ -23,9 +31,13 @@ from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
 
 
 def _is_mod(member: discord.Member) -> bool:
-    """Return True if the member has server-level moderation permissions."""
+    """Return True if the member has moderation permissions or an allowed role."""
     perms = member.guild_permissions
-    return bool(perms.administrator or perms.manage_guild)
+    if perms.administrator or perms.manage_guild:
+        return True
+
+    allowed_roles = {"admin", "mod", "master of ceremonies", "dj"}
+    return any(role.name.lower() in allowed_roles for role in member.roles)
 
 
 @dataclass(frozen=True)
@@ -38,6 +50,8 @@ class BotDeps:
     ingest_use_case: IngestSunoLink
     audio_manager: AudioControllerManager
     playlist_client: HttpxSunoPlaylistClient
+    submission_repo: PostgresSubmissionRepository
+    queue_repo: PostgresQueueRepository
 
 
 class JukeBot(commands.Bot):
@@ -63,6 +77,8 @@ class JukeBot(commands.Bot):
 
         logging.basicConfig(level=logging.INFO)
 
+        self.remove_command("help")
+
         # Register events + commands once, right after construction.
         self._register_events()
         self._register_commands()
@@ -87,10 +103,40 @@ class JukeBot(commands.Bot):
     def _get_audio(self, ctx: commands.Context) -> AudioControllerManager:
         return self.deps.audio_manager
 
+    def _build_opus_url(self, track_id: UUID | None) -> str | None:
+        if track_id is None or self.settings.opus_api_base_url is None:
+            return None
+        base_url = self.settings.opus_api_base_url.rstrip("/")
+        return f"{base_url}/tracks/{track_id}/opus"
+
+    async def _prefetch_opus(self, track_id: UUID) -> None:
+        if self.settings.opus_api_base_url is None:
+            return
+        status_url = f"{self.settings.opus_api_base_url.rstrip('/')}/tracks/{track_id}/opus/status"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.get(status_url)
+        except Exception as exc:
+            logging.warning("Failed to prefetch opus status for %s: %s", track_id, exc)
+
     # -----------------------------
     # Events
     # -----------------------------
     def _register_events(self) -> None:
+        async def _send_submission_feedback(message: discord.Message, content: str) -> None:
+            try:
+                await message.author.send(content)
+                return
+            except discord.Forbidden:
+                pass
+            except discord.HTTPException:
+                return
+
+            try:
+                await message.channel.send(f"{message.author.mention} {content}")
+            except discord.HTTPException:
+                return
+
         @self.event
         async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
             if isinstance(error, commands.CheckFailure):
@@ -165,10 +211,39 @@ class JukeBot(commands.Bot):
 
             added_any = False
             skipped_playlist = False
+            blocked_reason: str | None = None
+            limit_reached = False
+
+            session = self.deps.session_manager.for_guild(message.guild.id)
+            is_host = isinstance(message.author, discord.Member) and _is_mod(message.author)
+            user_id = message.author.id
+            remaining_slots: int | None = None
+
+            if not is_host:
+                if not session.submissions_open:
+                    blocked_reason = "Submissions are closed right now."
+                else:
+                    if session.per_user_limit is not None:
+                        current = session.per_user_counts.get(user_id, 0)
+                        remaining_slots = session.per_user_limit - current
+                        if remaining_slots <= 0:
+                            blocked_reason = "You have reached the submission limit for this session."
+                    if blocked_reason is None:
+                        cooldown_remaining = session.cooldown_remaining(user_id)
+                        if cooldown_remaining > 0:
+                            blocked_reason = (
+                                "You're on cooldown for another "
+                                f"{math.ceil(cooldown_remaining)}s before submitting again."
+                            )
             for url in urls:
                 if "https://suno.com/playlist/" in url:
                     skipped_playlist = True
                     continue
+                if blocked_reason is not None:
+                    continue
+                if remaining_slots is not None and remaining_slots <= 0:
+                    limit_reached = True
+                    break
                 try:
                     result = await self.deps.ingest_use_case.execute(
                         IngestSunoLinkInput(
@@ -183,22 +258,15 @@ class JukeBot(commands.Bot):
                     print(f"Failed to ingest Suno URL {url}: {exc}")
                     continue
 
-                if not result.is_duplicate_in_guild:
-                    added_any = True
-                    
-                # inside on_message, after successful ingest and not duplicate
-                session = self.deps.session_manager.for_guild(message.guild.id)
-
-                # If you want to respect close/limit logic:
-                if not session.submissions_open:
-                    continue
-
                 if not result.mp3_url:
                     logging.warning("Skipping Suno URL without mp3_url: %s", url)
                     continue
 
+                opus_url = self._build_opus_url(result.track_id)
+
                 track = Track(
                     audio_url=result.mp3_url,
+                    opus_url=opus_url,
                     page_url=result.suno_url,
                     title=result.track_title or url,
                     artist_display=result.artist_display,
@@ -208,13 +276,26 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[track.requester_id] = session.per_user_counts.get(track.requester_id, 0) + 1
+                asyncio.create_task(self._prefetch_opus(result.track_id))
+                added_any = True
+                if remaining_slots is not None:
+                    remaining_slots -= 1
 
 
             if added_any:
+                session.mark_submission(user_id)
                 try:
                     await message.add_reaction("🤘")
                 except discord.HTTPException:
                     pass
+            if blocked_reason is not None:
+                await _send_submission_feedback(message, blocked_reason)
+            elif limit_reached:
+                await _send_submission_feedback(
+                    message,
+                    "You have reached the submission limit for this session. "
+                    "Additional songs were not queued.",
+                )
 
             if skipped_playlist:
                 await message.channel.send("Playlist links aren’t auto-ingested. Use `;playlist <url>` instead.")
@@ -225,10 +306,78 @@ class JukeBot(commands.Bot):
     # Commands
     # -----------------------------
     def _register_commands(self) -> None:
+        @self.command(name="help")
+        async def help_command(ctx: commands.Context) -> None:
+            is_mod = isinstance(ctx.author, discord.Member) and _is_mod(ctx.author)
+            embed = discord.Embed(
+                title="JukeBotx Help",
+                description=(
+                    "Command prefix: `;`\n"
+                    "Drop Suno links in chat to queue when submissions are open. "
+                    "Use `;playlist <url>` for Suno playlists (mods only)."
+                ),
+                color=discord.Color.orange() if is_mod else discord.Color.blurple(),
+            )
+            embed.add_field(
+                name="Session",
+                value=(
+                    "`;join` — Join your voice channel (mods).\n"
+                    "`;leave` — Leave and reset the session (mods).\n"
+                    "`;open` / `;close` — Toggle submissions (mods).\n"
+                    "`;web` — Share the session web URL.\n"
+                    "`;setlist` — DM the current session setlist."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Queue + Playback",
+                value=(
+                    "`;q` — Show the queue and session status.\n"
+                    "`;p` — Start playback of the queue.\n"
+                    "`;np` — Show now playing info.\n"
+                    "`;n` — Skip the current track (mods).\n"
+                    "`;s` — Stop playback (mods)."
+                ),
+                inline=False,
+            )
+            if is_mod:
+                embed.add_field(
+                    name="Queue Management (mods)",
+                    value=(
+                        "`;playlist <url>` — Queue a Suno playlist and close submissions.\n"
+                        "`;clear` — Clear the queue.\n"
+                        "`;remove <index>` — Remove a queued item.\n"
+                        "`;limit <count>` — Set per-user submission limit."
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Autoplay + DJ Mode (mods)",
+                    value=(
+                        "`;autoplay` — Enable autoplay until the queue ends.\n"
+                        "`;autoplay <count>` — Play the next N tracks.\n"
+                        "`;autoplay off` — Disable autoplay.\n"
+                        "`;cooldown` / `;cooldown <minutes>` / `;cooldown off` — Toggle submission cooldown.\n"
+                        "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Announcements (mods)",
+                    value="`;ping here <message>` or `;ping jamsession <message>` — Ping channels/roles.",
+                    inline=False,
+                )
+            embed.set_footer(text="Need help? Ask a mod or use ;help anytime.")
+            await ctx.send(embed=embed)
+
         @self.command(name="join")
         async def join(ctx: commands.Context) -> None:
-            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+            if ctx.guild is None:
                 await ctx.send("This command can only be used in a server.")
+                return
+
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
                 return
 
             if ctx.author.voice is None or ctx.author.voice.channel is None:
@@ -255,6 +404,10 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.reset()
 
@@ -263,7 +416,67 @@ class JukeBot(commands.Bot):
                 await audio.stop(ctx.voice_client)
                 await ctx.voice_client.disconnect()
 
+            await self.deps.queue_repo.clear(guild_id=ctx.guild.id)
+            await self.deps.submission_repo.clear_for_channel(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+            )
+
             await ctx.send("Left the voice channel. Session reset.")
+
+        @self.command(name="setlist")
+        async def setlist(ctx: commands.Context) -> None:
+            if ctx.guild is None:
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            if ctx.author.voice is None or ctx.author.voice.channel is None:
+                await ctx.send("You're not in a voice channel!")
+                return
+
+            tracks = await self.deps.submission_repo.list_tracks_for_channel(
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+            )
+            if not tracks:
+                await ctx.send("No songs found for this session yet.")
+                return
+
+            channel_name = ctx.author.voice.channel.name.lower().strip()
+            channel_slug = re.sub(r"[^a-z0-9]+", "_", channel_name).strip("_") or "session"
+            date_stamp = datetime.now(timezone.utc).strftime("%b_%d_%Y").lower()
+            filename = f"{channel_slug}_{date_stamp}.txt"
+
+            lines = []
+            for track in tracks:
+                artist = track.artist_display or "Unknown Artist"
+                title = track.title or "Untitled"
+                url = track.suno_url or track.mp3_url or ""
+                lines.append(f"{artist} - {title} - {url}")
+
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp_file:
+                tmp_file.write("\n".join(lines))
+                tmp_path = tmp_file.name
+
+            try:
+                await ctx.author.send(
+                    content="Here's your session setlist!",
+                    file=discord.File(tmp_path, filename=filename),
+                )
+            except discord.Forbidden:
+                await ctx.send("I couldn't DM you the setlist. Please enable DMs and try again.")
+                return
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    logging.warning("Failed to delete temp setlist file: %s", tmp_path)
+
+            await ctx.send("Setlist sent via DM.")
 
         @self.command(name="ping")
         async def ping(ctx: commands.Context, target: str, *, message: str) -> None:
@@ -306,6 +519,10 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.submissions_open = True
             session.reset_submission_counts()
@@ -317,9 +534,41 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.submissions_open = False
             await ctx.send("Submissions are closed.")
+
+        @self.command(name="web", aliases=["sessionurl"])
+        async def web(ctx: commands.Context) -> None:
+            if ctx.guild is None:
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not isinstance(ctx.author, discord.Member) or not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            if self.settings.web_base_url is None:
+                await ctx.send("Web UI base URL is not configured.")
+                return
+
+            base_url = self.settings.web_base_url.rstrip("/")
+            url = (
+                f"{base_url}/guilds/{ctx.guild.id}"
+                f"/channels/{ctx.channel.id}/session/tracks"
+            )
+
+            target_channel = ctx.channel
+            if self.settings.jam_session_channel_id is not None:
+                configured_channel = ctx.guild.get_channel(self.settings.jam_session_channel_id)
+                if isinstance(configured_channel, discord.abc.Messageable):
+                    target_channel = configured_channel
+
+            await target_channel.send(f"Session URL: {url}")
 
         @self.command(name="playlist")
         async def playlist(ctx: commands.Context, url: str) -> None:
@@ -370,6 +619,8 @@ class JukeBot(commands.Bot):
                 page_url = item.suno_track_url
                 artist_display = None
                 media_url = None
+                opus_url = None
+                track_id: UUID | None = None
 
                 ingest_url = item.suno_track_url or item.mp3_url
                 if ingest_url is not None:
@@ -393,9 +644,12 @@ class JukeBot(commands.Bot):
                         page_url = ingest_result.suno_url
                         artist_display = ingest_result.artist_display
                         media_url = ingest_result.media_url
+                        opus_url = self._build_opus_url(ingest_result.track_id)
+                        track_id = ingest_result.track_id
 
                 track = Track(
                     audio_url=audio_url,
+                    opus_url=opus_url,
                     page_url=page_url,
                     title=track_title,
                     artist_display=artist_display,
@@ -405,6 +659,8 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
+                if track_id is not None:
+                    asyncio.create_task(self._prefetch_opus(track_id))
 
             session.submissions_open = False
             await ctx.send(
@@ -428,9 +684,23 @@ class JukeBot(commands.Bot):
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             lines: list[str] = []
+            if session.submissions_open:
+                lines.append("Session is open.")
+                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                    lines.append("Add a Suno URL to queue a song, or use `;playlist <url>`.")
+                else:
+                    lines.append("Add a Suno URL to queue a song.")
+            else:
+                lines.append("Session is closed.")
 
             if session.queue:
-                lines.append("Up next:")
+                total = len(session.queue)
+                if total == 1:
+                    lines.append("Last song")
+                elif total > 5:
+                    lines.append(f"Next 5 out of {total}")
+                else:
+                    lines.append(f"Next {total}")
                 for idx, track in enumerate(session.queue[:5], start=1):
                     lines.append(f"{idx}. {track.title} (requested by {track.requester_name})")
             else:
@@ -466,12 +736,22 @@ class JukeBot(commands.Bot):
                 return
 
             if not session.queue:
-                await ctx.send("Queue is empty. Use ;playlist <url>.")
+                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                    await ctx.send(
+                        "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
+                    )
+                else:
+                    await ctx.send("Queue is empty. Drop a Suno URL.")
                 return
 
             started = await audio.play_next(ctx.voice_client)
             if started is None:
-                await ctx.send("Queue is empty. Use ;playlist <url>.")
+                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                    await ctx.send(
+                        "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
+                    )
+                else:
+                    await ctx.send("Queue is empty. Drop a Suno URL.")
                 return
 
             session.now_playing_channel_id = ctx.channel.id
@@ -609,6 +889,41 @@ class JukeBot(commands.Bot):
             session.set_autoplay(remaining)
             await ctx.send(f"Autoplay enabled for the next {remaining} track(s).")
 
+        @self.command(name="cooldown")
+        async def cooldown(ctx: commands.Context, value: Optional[str] = None) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            session = self._get_session(ctx).for_guild(ctx.guild.id)
+
+            if value is None or value.lower() == "on":
+                session.submission_cooldown_seconds = 15 * 60
+                await ctx.send("Submission cooldown set to 15 minutes.")
+                return
+
+            if value.lower() == "off":
+                session.submission_cooldown_seconds = 0
+                await ctx.send("⚠️ Submission cooldown has been deactivated.")
+                return
+
+            try:
+                minutes = int(value)
+            except ValueError:
+                await ctx.send("Cooldown value must be a number of minutes or 'off'.")
+                return
+
+            if minutes < 1:
+                await ctx.send("Cooldown minutes must be at least 1.")
+                return
+
+            session.submission_cooldown_seconds = minutes * 60
+            await ctx.send(f"Submission cooldown set to {minutes} minute(s).")
+
         @self.command(name="dj")
         async def dj(ctx: commands.Context, value: Optional[str] = None) -> None:
             if ctx.guild is None or not isinstance(ctx.author, discord.Member):
@@ -667,6 +982,8 @@ def build_bot() -> JukeBot:
             queue_repo=PostgresQueueRepository(async_session_factory),
         ),
         playlist_client=HttpxSunoPlaylistClient(),
+        submission_repo=PostgresSubmissionRepository(async_session_factory),
+        queue_repo=PostgresQueueRepository(async_session_factory),
     )
 
     return JukeBot(
