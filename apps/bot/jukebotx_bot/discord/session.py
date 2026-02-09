@@ -22,6 +22,8 @@ class Track:
 class SessionState:
     submissions_open: bool = True
     per_user_limit: int | None = None
+    session_total_limit: int | None = None
+    total_tracks_added: int = 0
     per_user_counts: dict[int, int] = field(default_factory=dict)
     submission_cooldown_seconds: int = 15 * 60
     last_submission_at: dict[int, float] = field(default_factory=dict)
@@ -37,6 +39,8 @@ class SessionState:
     def reset(self) -> None:
         self.submissions_open = True
         self.per_user_limit = None
+        self.session_total_limit = None
+        self.total_tracks_added = 0
         self.per_user_counts.clear()
         self.last_submission_at.clear()
         self.autoplay_enabled = False
