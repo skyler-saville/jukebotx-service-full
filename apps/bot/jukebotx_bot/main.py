@@ -335,6 +335,8 @@ class JukeBot(commands.Bot):
                     "`;q` — Show the queue and session status.\n"
                     "`;p` — Start playback of the queue.\n"
                     "`;np` — Show now playing info.\n"
+                    "`;pause` — Pause playback (mods).\n"
+                    "`;resume` — Resume playback (mods).\n"
                     "`;n` — Skip the current track (mods).\n"
                     "`;s` — Stop playback (mods)."
                 ),
@@ -790,6 +792,48 @@ class JukeBot(commands.Bot):
             session.now_playing_channel_id = ctx.channel.id
             embed = build_now_playing_embed(started)
             await ctx.send(content="Skipped.", embed=embed)
+
+        @self.command(name="pause")
+        async def pause(ctx: commands.Context) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            if ctx.voice_client is None:
+                await ctx.send("I'm not connected to a voice channel.")
+                return
+
+            if not ctx.voice_client.is_playing():
+                await ctx.send("Nothing is playing right now.")
+                return
+
+            ctx.voice_client.pause()
+            await ctx.send("Playback paused.")
+
+        @self.command(name="resume")
+        async def resume(ctx: commands.Context) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            if ctx.voice_client is None:
+                await ctx.send("I'm not connected to a voice channel.")
+                return
+
+            if not ctx.voice_client.is_paused():
+                await ctx.send("Playback is not paused.")
+                return
+
+            ctx.voice_client.resume()
+            await ctx.send("Playback resumed.")
 
         @self.command(name="s")
         async def stop(ctx: commands.Context) -> None:
