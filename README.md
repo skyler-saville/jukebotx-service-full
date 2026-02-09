@@ -308,6 +308,10 @@ The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/
 
 * `;web` / `;sessionurl` — post the session UI link (requires `WEB_BASE_URL`)
 
+### Web UI
+
+* `;web` / `;sessionurl` — post the session UI link (requires `WEB_BASE_URL`)
+
 ### Announcements
 
 * `;ping here <message>` — announce in the jam session channel (mod-only)

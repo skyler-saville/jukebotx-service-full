@@ -1,9 +1,10 @@
 # apps/bot/jukebotx_bot/main.py
 from __future__ import annotations
 
+
 from dataclasses import dataclass
-import csv
 from datetime import datetime, timezone
+import csv
 import logging
 import math
 import os
