@@ -729,6 +729,14 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            is_mod = isinstance(ctx.author, discord.Member) and _is_mod(ctx.author)
+            full_autoplay_mode = (
+                session.autoplay_enabled is True and session.autoplay_remaining is None
+            )
+            if not is_mod and not full_autoplay_mode:
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session.now_playing_channel_id = ctx.channel.id
             audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             if session.now_playing is not None:
@@ -736,7 +744,7 @@ class JukeBot(commands.Bot):
                 return
 
             if not session.queue:
-                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                if is_mod:
                     await ctx.send(
                         "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
                     )
@@ -746,7 +754,7 @@ class JukeBot(commands.Bot):
 
             started = await audio.play_next(ctx.voice_client)
             if started is None:
-                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                if is_mod:
                     await ctx.send(
                         "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
                     )
