@@ -97,8 +97,9 @@ class PostgresSubmissionRepository(SubmissionRepository):
                     title=track.title,
                     suno_url=track.suno_url,
                     mp3_url=track.mp3_url,
+                    requester_id=submission.author_id,
                 )
-                for _, track in rows.all()
+                for submission, track in rows.all()
             ]
 
     async def clear_for_channel(self, *, guild_id: int, channel_id: int) -> int:
