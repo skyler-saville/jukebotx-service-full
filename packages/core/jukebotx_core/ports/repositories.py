@@ -52,6 +52,7 @@ class SubmissionTrackInfo:
     title: str | None
     suno_url: str
     mp3_url: str | None
+    requester_id: int | None
 
 
 @dataclass(frozen=True)
