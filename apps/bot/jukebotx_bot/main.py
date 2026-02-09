@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import csv
 from datetime import datetime, timezone
 import logging
 import math
@@ -449,22 +450,31 @@ class JukeBot(commands.Bot):
             channel_name = ctx.author.voice.channel.name.lower().strip()
             channel_slug = re.sub(r"[^a-z0-9]+", "_", channel_name).strip("_") or "session"
             date_stamp = datetime.now(timezone.utc).strftime("%b_%d_%Y").lower()
-            filename = f"{channel_slug}_{date_stamp}.txt"
+            filename = f"{channel_slug}_{date_stamp}.csv"
 
-            lines = []
-            for track in tracks:
-                artist = track.artist_display or "Unknown Artist"
-                title = track.title or "Untitled"
-                url = track.suno_url or track.mp3_url or ""
-                lines.append(f"{artist} - {title} - {url}")
-
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp_file:
-                tmp_file.write("\n".join(lines))
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", delete=False) as tmp_file:
+                writer = csv.writer(tmp_file)
+                writer.writerow(["Artist", "Title", "URL", "Requested By"])
+                for track in tracks:
+                    artist = track.artist_display or "Unknown Artist"
+                    title = track.title or "Untitled"
+                    url = track.suno_url or track.mp3_url or ""
+                    requester = ""
+                    if track.requester_id is not None:
+                        member = ctx.guild.get_member(track.requester_id)
+                        requester = member.display_name if member is not None else str(track.requester_id)
+                    writer.writerow([artist, title, url, requester])
                 tmp_path = tmp_file.name
 
             try:
                 await ctx.author.send(
-                    content="Here's your session setlist!",
+                    content=(
+                        "Here's your session setlist CSV!\n"
+                        "Google Sheets import:\n"
+                        "• Upload CSV\n"
+                        "• Use comma delimiter\n"
+                        "• Confirm UTF-8 encoding if prompted"
+                    ),
                     file=discord.File(tmp_path, filename=filename),
                 )
             except discord.Forbidden:
