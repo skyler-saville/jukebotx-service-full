@@ -302,7 +302,7 @@ The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/
 * `;close` — close submissions
 * `;limit <count>` — set per-user submission limit (mod-only)
 * `;autoplay [count|off]` — auto-play up to `count` tracks or until empty (mod-only)
-* `;dj [count|off]` — DJ mode for `count` tracks or until empty (mod-only)
+* `;dj [count|off]` — Not implemented yet, but is meant to work best for stream host that like to talk between tracks(mod-only)
 
 ### Web UI
 
