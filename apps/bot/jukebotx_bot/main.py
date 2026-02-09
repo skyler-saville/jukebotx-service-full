@@ -704,7 +704,10 @@ class JukeBot(commands.Bot):
                 else:
                     lines.append(f"Next {total}")
                 for idx, track in enumerate(session.queue[:5], start=1):
-                    lines.append(f"{idx}. {track.title} (requested by {track.requester_name})")
+                    artist = track.artist_display or "Unknown Artist"
+                    lines.append(
+                        f"{idx}. {track.title} by {artist} (Requested by {track.requester_name})"
+                    )
             else:
                 lines.append("Queue is empty.")
 
