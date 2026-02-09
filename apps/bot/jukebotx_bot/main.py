@@ -120,6 +120,16 @@ class JukeBot(commands.Bot):
         except Exception as exc:
             logging.warning("Failed to prefetch opus status for %s: %s", track_id, exc)
 
+    def _session_limit_reached(self, session) -> bool:
+        return (
+            session.session_total_limit is not None
+            and session.total_tracks_added >= session.session_total_limit
+        )
+
+    def _record_track_addition(self, session, requester_id: int) -> None:
+        session.per_user_counts[requester_id] = session.per_user_counts.get(requester_id, 0) + 1
+        session.total_tracks_added += 1
+
     # -----------------------------
     # Events
     # -----------------------------
@@ -229,6 +239,9 @@ class JukeBot(commands.Bot):
                         remaining_slots = session.per_user_limit - current
                         if remaining_slots <= 0:
                             blocked_reason = "You have reached the submission limit for this session."
+                    if blocked_reason is None and self._session_limit_reached(session):
+                        session.submissions_open = False
+                        blocked_reason = "Session closed at limit: no more tracks can be added."
                     if blocked_reason is None:
                         if session.cooldown_mode == CooldownMode.QUEUE:
                             if session.has_user_track_in_queue(user_id):
@@ -248,6 +261,10 @@ class JukeBot(commands.Bot):
                     continue
                 if blocked_reason is not None:
                     continue
+                if self._session_limit_reached(session):
+                    session.submissions_open = False
+                    limit_reached = True
+                    break
                 if remaining_slots is not None and remaining_slots <= 0:
                     limit_reached = True
                     break
@@ -282,7 +299,7 @@ class JukeBot(commands.Bot):
                     requester_name=getattr(message.author, "display_name", "unknown"),
                 )
                 session.queue.append(track)
-                session.per_user_counts[track.requester_id] = session.per_user_counts.get(track.requester_id, 0) + 1
+                self._record_track_addition(session, track.requester_id)
                 asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
                 if remaining_slots is not None:
@@ -300,8 +317,7 @@ class JukeBot(commands.Bot):
             elif limit_reached:
                 await _send_submission_feedback(
                     message,
-                    "You have reached the submission limit for this session. "
-                    "Additional songs were not queued.",
+                    "Session closed at limit: no more tracks can be added. Additional songs were not queued.",
                 )
 
             if skipped_playlist:
@@ -356,7 +372,8 @@ class JukeBot(commands.Bot):
                         "`;playlist <url>` — Queue a Suno playlist and close submissions.\n"
                         "`;clear` — Clear the queue.\n"
                         "`;remove <index>` — Remove a queued item.\n"
-                        "`;limit <count>` — Set per-user submission limit."
+                        "`;limit <count>` — Set per-user submission limit.\n"
+                        "`;limit --session <count>` — Set session-wide total track cap."
                     ),
                     inline=False,
                 )
@@ -630,6 +647,12 @@ class JukeBot(commands.Bot):
                     await ctx.send("You have reached the submission limit for this session.")
                     return
 
+            if self._session_limit_reached(session):
+                session.submissions_open = False
+                await ctx.send("Session closed at limit: no more tracks can be added.")
+                return
+
+            accepted_count = 0
             for item in playlist_data.items:
                 display_url = item.suno_track_url or item.mp3_url
                 track_title = display_url
@@ -675,16 +698,33 @@ class JukeBot(commands.Bot):
                     requester_id=ctx.author.id,
                     requester_name=ctx.author.display_name,
                 )
+                if self._session_limit_reached(session):
+                    session.submissions_open = False
+                    break
+
                 session.queue.append(track)
-                session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
+                self._record_track_addition(session, user_id)
+                accepted_count += 1
                 if track_id is not None:
                     asyncio.create_task(self._prefetch_opus(track_id))
 
+            if accepted_count == 0:
+                session.submissions_open = False
+                await ctx.send("Session closed at limit: no more tracks can be added.")
+                return
+
             session.submissions_open = False
-            await ctx.send(
-                "Queued "
-                f"{len(playlist_data.items)} track(s) from the playlist. Submissions are now closed."
-            )
+            if accepted_count < len(playlist_data.items):
+                await ctx.send(
+                    "Queued "
+                    f"{accepted_count} track(s) from the playlist before the session limit was reached. "
+                    "Session closed at limit."
+                )
+            else:
+                await ctx.send(
+                    "Queued "
+                    f"{accepted_count} track(s) from the playlist. Submissions are now closed."
+                )
 
             if session.autoplay_enabled and session.now_playing is None and ctx.voice_client is not None:
                 audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
@@ -906,7 +946,7 @@ class JukeBot(commands.Bot):
             await ctx.send(f"Removed: {track.title} (requested by {track.requester_name}).")
 
         @self.command(name="limit")
-        async def limit(ctx: commands.Context, limit_value: int) -> None:
+        async def limit(ctx: commands.Context, *args: str) -> None:
             if ctx.guild is None or not isinstance(ctx.author, discord.Member):
                 await ctx.send("This command can only be used in a server.")
                 return
@@ -915,11 +955,44 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
+            if not args:
+                await ctx.send("Usage: `;limit <count>` or `;limit --session <count>`.")
+                return
+
+            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            if len(args) == 2 and args[0] == "--session":
+                try:
+                    session_limit = int(args[1])
+                except ValueError:
+                    await ctx.send("Session limit must be a number.")
+                    return
+
+                if session_limit < 1:
+                    await ctx.send("Session limit must be at least 1.")
+                    return
+
+                session.session_total_limit = session_limit
+                if self._session_limit_reached(session):
+                    session.submissions_open = False
+                await ctx.send(
+                    f"Session total track cap set to {session_limit} (counts all tracks added this session)."
+                )
+                return
+
+            if len(args) != 1:
+                await ctx.send("Usage: `;limit <count>` or `;limit --session <count>`.")
+                return
+
+            try:
+                limit_value = int(args[0])
+            except ValueError:
+                await ctx.send("Limit must be a number.")
+                return
+
             if limit_value < 1:
                 await ctx.send("Limit must be at least 1.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.per_user_limit = limit_value
             await ctx.send(f"Per-user submission limit set to {limit_value}.")
 
