@@ -18,7 +18,7 @@ import httpx
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
-from jukebotx_bot.discord.session import SessionManager, Track
+from jukebotx_bot.discord.session import CooldownMode, SessionManager, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
@@ -229,12 +229,18 @@ class JukeBot(commands.Bot):
                         if remaining_slots <= 0:
                             blocked_reason = "You have reached the submission limit for this session."
                     if blocked_reason is None:
-                        cooldown_remaining = session.cooldown_remaining(user_id)
-                        if cooldown_remaining > 0:
-                            blocked_reason = (
-                                "You're on cooldown for another "
-                                f"{math.ceil(cooldown_remaining)}s before submitting again."
-                            )
+                        if session.cooldown_mode == CooldownMode.QUEUE:
+                            if session.has_user_track_in_queue(user_id):
+                                blocked_reason = (
+                                    "Queue cooldown is enabled. You already have a track in queue or now playing."
+                                )
+                        else:
+                            cooldown_remaining = session.cooldown_remaining(user_id)
+                            if cooldown_remaining > 0:
+                                blocked_reason = (
+                                    "You're on cooldown for another "
+                                    f"{math.ceil(cooldown_remaining)}s before submitting again."
+                                )
             for url in urls:
                 if "https://suno.com/playlist/" in url:
                     skipped_playlist = True
@@ -357,7 +363,7 @@ class JukeBot(commands.Bot):
                         "`;autoplay` — Enable autoplay until the queue ends.\n"
                         "`;autoplay <count>` — Play the next N tracks.\n"
                         "`;autoplay off` — Disable autoplay.\n"
-                        "`;cooldown` / `;cooldown <minutes>` / `;cooldown off` — Toggle submission cooldown.\n"
+                        "`;cooldown` / `;cooldown <minutes>` / `;cooldown -queue` / `;cooldown off` — Toggle submission cooldown.\n"
                         "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
                     ),
                     inline=False,
@@ -902,11 +908,20 @@ class JukeBot(commands.Bot):
             session = self._get_session(ctx).for_guild(ctx.guild.id)
 
             if value is None or value.lower() == "on":
+                session.cooldown_mode = CooldownMode.TIME
                 session.submission_cooldown_seconds = 15 * 60
                 await ctx.send("Submission cooldown set to 15 minutes.")
                 return
 
-            if value.lower() == "off":
+            lowered = value.lower()
+
+            if lowered == "-queue":
+                session.cooldown_mode = CooldownMode.QUEUE
+                await ctx.send("Submission cooldown set to queue mode (one active track per user).")
+                return
+
+            if lowered == "off":
+                session.cooldown_mode = CooldownMode.OFF
                 session.submission_cooldown_seconds = 0
                 await ctx.send("⚠️ Submission cooldown has been deactivated.")
                 return
@@ -914,13 +929,14 @@ class JukeBot(commands.Bot):
             try:
                 minutes = int(value)
             except ValueError:
-                await ctx.send("Cooldown value must be a number of minutes or 'off'.")
+                await ctx.send("Cooldown value must be a number of minutes, '-queue', or 'off'.")
                 return
 
             if minutes < 1:
                 await ctx.send("Cooldown minutes must be at least 1.")
                 return
 
+            session.cooldown_mode = CooldownMode.TIME
             session.submission_cooldown_seconds = minutes * 60
             await ctx.send(f"Submission cooldown set to {minutes} minute(s).")
 
