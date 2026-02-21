@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import time
+
+
+class CooldownMode(str, Enum):
+    TIME = "time"
+    QUEUE = "queue"
+    OFF = "off"
 
 
 @dataclass
@@ -22,8 +29,11 @@ class Track:
 class SessionState:
     submissions_open: bool = True
     per_user_limit: int | None = None
+    session_total_limit: int | None = None
+    total_tracks_added: int = 0
     per_user_counts: dict[int, int] = field(default_factory=dict)
     submission_cooldown_seconds: int = 15 * 60
+    cooldown_mode: CooldownMode = CooldownMode.TIME
     last_submission_at: dict[int, float] = field(default_factory=dict)
     autoplay_enabled: bool = False
     autoplay_remaining: int | None = None
@@ -37,8 +47,11 @@ class SessionState:
     def reset(self) -> None:
         self.submissions_open = True
         self.per_user_limit = None
+        self.session_total_limit = None
+        self.total_tracks_added = 0
         self.per_user_counts.clear()
         self.last_submission_at.clear()
+        self.cooldown_mode = CooldownMode.TIME
         self.autoplay_enabled = False
         self.autoplay_remaining = None
         self.dj_enabled = False
@@ -56,6 +69,9 @@ class SessionState:
         self.last_submission_at.clear()
 
     def cooldown_remaining(self, user_id: int, *, now: float | None = None) -> float:
+        if self.cooldown_mode != CooldownMode.TIME:
+            return 0.0
+
         if self.submission_cooldown_seconds <= 0:
             return 0.0
 
@@ -68,8 +84,17 @@ class SessionState:
         return max(0.0, remaining)
 
     def mark_submission(self, user_id: int, *, now: float | None = None) -> None:
+        if self.cooldown_mode != CooldownMode.TIME:
+            return
+
         current = now if now is not None else time.monotonic()
         self.last_submission_at[user_id] = current
+
+    def has_user_track_in_queue(self, user_id: int) -> bool:
+        if self.now_playing is not None and self.now_playing.requester_id == user_id:
+            return True
+
+        return any(track.requester_id == user_id for track in self.queue)
 
     def set_autoplay(self, remaining: int | None) -> None:
         if remaining is None:

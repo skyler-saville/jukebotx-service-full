@@ -1,8 +1,10 @@
 # apps/bot/jukebotx_bot/main.py
 from __future__ import annotations
 
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import csv
 import logging
 import math
 import os
@@ -18,7 +20,7 @@ import httpx
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
-from jukebotx_bot.discord.session import SessionManager, Track
+from jukebotx_bot.discord.session import CooldownMode, SessionManager, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
@@ -118,6 +120,16 @@ class JukeBot(commands.Bot):
                 await client.get(status_url)
         except Exception as exc:
             logging.warning("Failed to prefetch opus status for %s: %s", track_id, exc)
+
+    def _session_limit_reached(self, session) -> bool:
+        return (
+            session.session_total_limit is not None
+            and session.total_tracks_added >= session.session_total_limit
+        )
+
+    def _record_track_addition(self, session, requester_id: int) -> None:
+        session.per_user_counts[requester_id] = session.per_user_counts.get(requester_id, 0) + 1
+        session.total_tracks_added += 1
 
     # -----------------------------
     # Events
@@ -228,19 +240,32 @@ class JukeBot(commands.Bot):
                         remaining_slots = session.per_user_limit - current
                         if remaining_slots <= 0:
                             blocked_reason = "You have reached the submission limit for this session."
+                    if blocked_reason is None and self._session_limit_reached(session):
+                        session.submissions_open = False
+                        blocked_reason = "Session closed at limit: no more tracks can be added."
                     if blocked_reason is None:
-                        cooldown_remaining = session.cooldown_remaining(user_id)
-                        if cooldown_remaining > 0:
-                            blocked_reason = (
-                                "You're on cooldown for another "
-                                f"{math.ceil(cooldown_remaining)}s before submitting again."
-                            )
+                        if session.cooldown_mode == CooldownMode.QUEUE:
+                            if session.has_user_track_in_queue(user_id):
+                                blocked_reason = (
+                                    "Queue cooldown is enabled. You already have a track in queue or now playing."
+                                )
+                        else:
+                            cooldown_remaining = session.cooldown_remaining(user_id)
+                            if cooldown_remaining > 0:
+                                blocked_reason = (
+                                    "You're on cooldown for another "
+                                    f"{math.ceil(cooldown_remaining)}s before submitting again."
+                                )
             for url in urls:
                 if "https://suno.com/playlist/" in url:
                     skipped_playlist = True
                     continue
                 if blocked_reason is not None:
                     continue
+                if self._session_limit_reached(session):
+                    session.submissions_open = False
+                    limit_reached = True
+                    break
                 if remaining_slots is not None and remaining_slots <= 0:
                     limit_reached = True
                     break
@@ -275,7 +300,7 @@ class JukeBot(commands.Bot):
                     requester_name=getattr(message.author, "display_name", "unknown"),
                 )
                 session.queue.append(track)
-                session.per_user_counts[track.requester_id] = session.per_user_counts.get(track.requester_id, 0) + 1
+                self._record_track_addition(session, track.requester_id)
                 asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
                 if remaining_slots is not None:
@@ -293,8 +318,7 @@ class JukeBot(commands.Bot):
             elif limit_reached:
                 await _send_submission_feedback(
                     message,
-                    "You have reached the submission limit for this session. "
-                    "Additional songs were not queued.",
+                    "Session closed at limit: no more tracks can be added. Additional songs were not queued.",
                 )
 
             if skipped_playlist:
@@ -335,6 +359,8 @@ class JukeBot(commands.Bot):
                     "`;q` — Show the queue and session status.\n"
                     "`;p` — Start playback of the queue.\n"
                     "`;np` — Show now playing info.\n"
+                    "`;pause` — Pause playback (mods).\n"
+                    "`;resume` — Resume playback (mods).\n"
                     "`;n` — Skip the current track (mods).\n"
                     "`;s` — Stop playback (mods)."
                 ),
@@ -347,7 +373,8 @@ class JukeBot(commands.Bot):
                         "`;playlist <url>` — Queue a Suno playlist and close submissions.\n"
                         "`;clear` — Clear the queue.\n"
                         "`;remove <index>` — Remove a queued item.\n"
-                        "`;limit <count>` — Set per-user submission limit."
+                        "`;limit <count>` — Set per-user submission limit.\n"
+                        "`;limit --session <count>` — Set session-wide total track cap."
                     ),
                     inline=False,
                 )
@@ -357,7 +384,7 @@ class JukeBot(commands.Bot):
                         "`;autoplay` — Enable autoplay until the queue ends.\n"
                         "`;autoplay <count>` — Play the next N tracks.\n"
                         "`;autoplay off` — Disable autoplay.\n"
-                        "`;cooldown` / `;cooldown <minutes>` / `;cooldown off` — Toggle submission cooldown.\n"
+                        "`;cooldown` / `;cooldown <minutes>` / `;cooldown -queue` / `;cooldown off` — Toggle submission cooldown.\n"
                         "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
                     ),
                     inline=False,
@@ -449,22 +476,31 @@ class JukeBot(commands.Bot):
             channel_name = ctx.author.voice.channel.name.lower().strip()
             channel_slug = re.sub(r"[^a-z0-9]+", "_", channel_name).strip("_") or "session"
             date_stamp = datetime.now(timezone.utc).strftime("%b_%d_%Y").lower()
-            filename = f"{channel_slug}_{date_stamp}.txt"
+            filename = f"{channel_slug}_{date_stamp}.csv"
 
-            lines = []
-            for track in tracks:
-                artist = track.artist_display or "Unknown Artist"
-                title = track.title or "Untitled"
-                url = track.suno_url or track.mp3_url or ""
-                lines.append(f"{artist} - {title} - {url}")
-
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp_file:
-                tmp_file.write("\n".join(lines))
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", delete=False) as tmp_file:
+                writer = csv.writer(tmp_file)
+                writer.writerow(["Artist", "Title", "URL", "Requested By"])
+                for track in tracks:
+                    artist = track.artist_display or "Unknown Artist"
+                    title = track.title or "Untitled"
+                    url = track.suno_url or track.mp3_url or ""
+                    requester = ""
+                    if track.requester_id is not None:
+                        member = ctx.guild.get_member(track.requester_id)
+                        requester = member.display_name if member is not None else str(track.requester_id)
+                    writer.writerow([artist, title, url, requester])
                 tmp_path = tmp_file.name
 
             try:
                 await ctx.author.send(
-                    content="Here's your session setlist!",
+                    content=(
+                        "Here's your session setlist CSV!\n"
+                        "Google Sheets import:\n"
+                        "• Upload CSV\n"
+                        "• Use comma delimiter\n"
+                        "• Confirm UTF-8 encoding if prompted"
+                    ),
                     file=discord.File(tmp_path, filename=filename),
                 )
             except discord.Forbidden:
@@ -612,6 +648,12 @@ class JukeBot(commands.Bot):
                     await ctx.send("You have reached the submission limit for this session.")
                     return
 
+            if self._session_limit_reached(session):
+                session.submissions_open = False
+                await ctx.send("Session closed at limit: no more tracks can be added.")
+                return
+
+            accepted_count = 0
             for item in playlist_data.items:
                 display_url = item.suno_track_url or item.mp3_url
                 track_title = display_url
@@ -657,16 +699,33 @@ class JukeBot(commands.Bot):
                     requester_id=ctx.author.id,
                     requester_name=ctx.author.display_name,
                 )
+                if self._session_limit_reached(session):
+                    session.submissions_open = False
+                    break
+
                 session.queue.append(track)
-                session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
+                self._record_track_addition(session, user_id)
+                accepted_count += 1
                 if track_id is not None:
                     asyncio.create_task(self._prefetch_opus(track_id))
 
+            if accepted_count == 0:
+                session.submissions_open = False
+                await ctx.send("Session closed at limit: no more tracks can be added.")
+                return
+
             session.submissions_open = False
-            await ctx.send(
-                "Queued "
-                f"{len(playlist_data.items)} track(s) from the playlist. Submissions are now closed."
-            )
+            if accepted_count < len(playlist_data.items):
+                await ctx.send(
+                    "Queued "
+                    f"{accepted_count} track(s) from the playlist before the session limit was reached. "
+                    "Session closed at limit."
+                )
+            else:
+                await ctx.send(
+                    "Queued "
+                    f"{accepted_count} track(s) from the playlist. Submissions are now closed."
+                )
 
             if session.autoplay_enabled and session.now_playing is None and ctx.voice_client is not None:
                 audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
@@ -702,7 +761,10 @@ class JukeBot(commands.Bot):
                 else:
                     lines.append(f"Next {total}")
                 for idx, track in enumerate(session.queue[:5], start=1):
-                    lines.append(f"{idx}. {track.title} (requested by {track.requester_name})")
+                    artist = track.artist_display or "Unknown Artist"
+                    lines.append(
+                        f"{idx}. {track.title} by {artist} (Requested by {track.requester_name})"
+                    )
             else:
                 lines.append("Queue is empty.")
 
@@ -729,6 +791,14 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            is_mod = isinstance(ctx.author, discord.Member) and _is_mod(ctx.author)
+            full_autoplay_mode = (
+                session.autoplay_enabled is True and session.autoplay_remaining is None
+            )
+            if not is_mod and not full_autoplay_mode:
+                await ctx.send("You don't have permission to use this command.")
+                return
+
             session.now_playing_channel_id = ctx.channel.id
             audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             if session.now_playing is not None:
@@ -736,7 +806,7 @@ class JukeBot(commands.Bot):
                 return
 
             if not session.queue:
-                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                if is_mod:
                     await ctx.send(
                         "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
                     )
@@ -746,7 +816,7 @@ class JukeBot(commands.Bot):
 
             started = await audio.play_next(ctx.voice_client)
             if started is None:
-                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
+                if is_mod:
                     await ctx.send(
                         "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
                     )
@@ -782,6 +852,48 @@ class JukeBot(commands.Bot):
             session.now_playing_channel_id = ctx.channel.id
             embed = build_now_playing_embed(started)
             await ctx.send(content="Skipped.", embed=embed)
+
+        @self.command(name="pause")
+        async def pause(ctx: commands.Context) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            if ctx.voice_client is None:
+                await ctx.send("I'm not connected to a voice channel.")
+                return
+
+            if not ctx.voice_client.is_playing():
+                await ctx.send("Nothing is playing right now.")
+                return
+
+            ctx.voice_client.pause()
+            await ctx.send("Playback paused.")
+
+        @self.command(name="resume")
+        async def resume(ctx: commands.Context) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            if not _is_mod(ctx.author):
+                await ctx.send("You don't have permission to use this command.")
+                return
+
+            if ctx.voice_client is None:
+                await ctx.send("I'm not connected to a voice channel.")
+                return
+
+            if not ctx.voice_client.is_paused():
+                await ctx.send("Playback is not paused.")
+                return
+
+            ctx.voice_client.resume()
+            await ctx.send("Playback resumed.")
 
         @self.command(name="s")
         async def stop(ctx: commands.Context) -> None:
@@ -835,7 +947,7 @@ class JukeBot(commands.Bot):
             await ctx.send(f"Removed: {track.title} (requested by {track.requester_name}).")
 
         @self.command(name="limit")
-        async def limit(ctx: commands.Context, limit_value: int) -> None:
+        async def limit(ctx: commands.Context, *args: str) -> None:
             if ctx.guild is None or not isinstance(ctx.author, discord.Member):
                 await ctx.send("This command can only be used in a server.")
                 return
@@ -844,11 +956,44 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
+            if not args:
+                await ctx.send("Usage: `;limit <count>` or `;limit --session <count>`.")
+                return
+
+            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            if len(args) == 2 and args[0] == "--session":
+                try:
+                    session_limit = int(args[1])
+                except ValueError:
+                    await ctx.send("Session limit must be a number.")
+                    return
+
+                if session_limit < 1:
+                    await ctx.send("Session limit must be at least 1.")
+                    return
+
+                session.session_total_limit = session_limit
+                if self._session_limit_reached(session):
+                    session.submissions_open = False
+                await ctx.send(
+                    f"Session total track cap set to {session_limit} (counts all tracks added this session)."
+                )
+                return
+
+            if len(args) != 1:
+                await ctx.send("Usage: `;limit <count>` or `;limit --session <count>`.")
+                return
+
+            try:
+                limit_value = int(args[0])
+            except ValueError:
+                await ctx.send("Limit must be a number.")
+                return
+
             if limit_value < 1:
                 await ctx.send("Limit must be at least 1.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.per_user_limit = limit_value
             await ctx.send(f"Per-user submission limit set to {limit_value}.")
 
@@ -902,11 +1047,20 @@ class JukeBot(commands.Bot):
             session = self._get_session(ctx).for_guild(ctx.guild.id)
 
             if value is None or value.lower() == "on":
+                session.cooldown_mode = CooldownMode.TIME
                 session.submission_cooldown_seconds = 15 * 60
                 await ctx.send("Submission cooldown set to 15 minutes.")
                 return
 
-            if value.lower() == "off":
+            lowered = value.lower()
+
+            if lowered == "-queue":
+                session.cooldown_mode = CooldownMode.QUEUE
+                await ctx.send("Submission cooldown set to queue mode (one active track per user).")
+                return
+
+            if lowered == "off":
+                session.cooldown_mode = CooldownMode.OFF
                 session.submission_cooldown_seconds = 0
                 await ctx.send("⚠️ Submission cooldown has been deactivated.")
                 return
@@ -914,13 +1068,14 @@ class JukeBot(commands.Bot):
             try:
                 minutes = int(value)
             except ValueError:
-                await ctx.send("Cooldown value must be a number of minutes or 'off'.")
+                await ctx.send("Cooldown value must be a number of minutes, '-queue', or 'off'.")
                 return
 
             if minutes < 1:
                 await ctx.send("Cooldown minutes must be at least 1.")
                 return
 
+            session.cooldown_mode = CooldownMode.TIME
             session.submission_cooldown_seconds = minutes * 60
             await ctx.send(f"Submission cooldown set to {minutes} minute(s).")
 
