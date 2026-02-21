@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_DB: jukebotx
       POSTGRES_USER: jukebotx
@@ -11,6 +12,7 @@ services:
       - "5432:5432"
 
   api:
+    restart: unless-stopped
     environment:
       PYTHONPATH: /app/apps/api:/app/packages/core:/app/packages/infra
     build:
@@ -25,6 +27,7 @@ services:
 
 
   worker:
+    restart: unless-stopped
     environment:
       PYTHONPATH: /app/apps/worker:/app/packages/core:/app/packages/infra
     build:
@@ -36,6 +39,7 @@ services:
       - minio
 
   bot:
+    restart: unless-stopped
     environment:
       PYTHONPATH: /app/apps/bot:/app/packages/core:/app/packages/infra
     build:
@@ -48,6 +52,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
