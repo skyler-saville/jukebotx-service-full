@@ -225,6 +225,9 @@ class JukeBot(commands.Bot):
             skipped_playlist = False
             blocked_reason: str | None = None
             limit_reached = False
+            url_outcomes: dict[str, str] = {}
+            success_count = 0
+            failure_count = 0
 
             session = self.deps.session_manager.for_guild(message.guild.id)
             is_host = isinstance(message.author, discord.Member) and _is_mod(message.author)
@@ -259,15 +262,22 @@ class JukeBot(commands.Bot):
             for url in urls:
                 if "https://suno.com/playlist/" in url:
                     skipped_playlist = True
+                    url_outcomes[url] = "skipped_playlist"
                     continue
                 if blocked_reason is not None:
+                    url_outcomes[url] = "blocked"
+                    failure_count += 1
                     continue
                 if self._session_limit_reached(session):
                     session.submissions_open = False
                     limit_reached = True
+                    url_outcomes[url] = "blocked"
+                    failure_count += 1
                     break
                 if remaining_slots is not None and remaining_slots <= 0:
                     limit_reached = True
+                    url_outcomes[url] = "blocked"
+                    failure_count += 1
                     break
                 try:
                     result = await self.deps.ingest_use_case.execute(
@@ -280,11 +290,27 @@ class JukeBot(commands.Bot):
                         )
                     )
                 except SunoScrapeError as exc:
-                    print(f"Failed to ingest Suno URL {url}: {exc}")
+                    url_outcomes[url] = "scrape_failure"
+                    failure_count += 1
+                    logging.exception(
+                        "Suno ingestion scrape failure for url=%s guild_id=%s channel_id=%s message_id=%s",
+                        url,
+                        message.guild.id,
+                        message.channel.id,
+                        message.id,
+                    )
                     continue
 
                 if not result.mp3_url:
-                    logging.warning("Skipping Suno URL without mp3_url: %s", url)
+                    url_outcomes[url] = "missing_required_fields"
+                    failure_count += 1
+                    logging.warning(
+                        "Suno ingestion missing required fields for url=%s guild_id=%s channel_id=%s message_id=%s",
+                        url,
+                        message.guild.id,
+                        message.channel.id,
+                        message.id,
+                    )
                     continue
 
                 opus_url = self._build_opus_url(result.track_id)
@@ -303,6 +329,8 @@ class JukeBot(commands.Bot):
                 self._record_track_addition(session, track.requester_id)
                 asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
+                success_count += 1
+                url_outcomes[url] = "success"
                 if remaining_slots is not None:
                     remaining_slots -= 1
 
@@ -313,6 +341,22 @@ class JukeBot(commands.Bot):
                     await message.add_reaction("🤘")
                 except discord.HTTPException:
                     pass
+
+            if success_count > 0 and failure_count > 0:
+                try:
+                    await message.channel.send(f"Queued {success_count} link(s); {failure_count} failed (see logs).")
+                except discord.HTTPException:
+                    pass
+
+            if not added_any and any(
+                outcome in {"scrape_failure", "missing_required_fields"}
+                for outcome in url_outcomes.values()
+            ):
+                try:
+                    await message.add_reaction("❌")
+                except discord.HTTPException:
+                    pass
+
             if blocked_reason is not None:
                 await _send_submission_feedback(message, blocked_reason)
             elif limit_reached:
