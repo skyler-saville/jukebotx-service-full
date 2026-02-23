@@ -29,6 +29,18 @@ class BotSettings(BaseSettings):
     web_base_url: str | None = Field(default=None, alias="WEB_BASE_URL")
     opus_api_base_url: str | None = Field(default=None, alias="OPUS_API_BASE_URL")
     master_user_id: int | None = Field(default=None, alias="MASTER_USER_ID")
+    master_dm_min_interval_seconds: int = Field(
+        default=600,
+        alias="MASTER_DM_MIN_INTERVAL_SECONDS",
+    )
+    master_dm_burst_threshold: int = Field(
+        default=5,
+        alias="MASTER_DM_BURST_THRESHOLD",
+    )
+    master_dm_burst_window_seconds: int = Field(
+        default=120,
+        alias="MASTER_DM_BURST_WINDOW_SECONDS",
+    )
 
     # Pydantic v2 configuration
     model_config = SettingsConfigDict(

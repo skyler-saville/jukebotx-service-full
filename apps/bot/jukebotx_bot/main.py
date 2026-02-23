@@ -209,10 +209,23 @@ class JukeBot(commands.Bot):
         voice_client: discord.VoiceClient | None,
         reason: str,
         channel_id_to_clear: int | None = None,
+        moderator_channel: discord.abc.Messageable | None = None,
     ) -> None:
         session = self.deps.session_manager.for_guild(guild.id)
+        await self._send_scrape_failure_report(
+            guild_id=guild.id,
+            session=session,
+            moderator_channel=moderator_channel,
+            reason=f"closure summary: {reason}",
+            force=True,
+        )
         session.queue.clear()
         session.scrape_failures.clear()
+        session.scrape_alerts.pending_failures.clear()
+        session.scrape_alerts.recent_failure_timestamps.clear()
+        session.scrape_alerts.fingerprint_timestamps.clear()
+        session.scrape_alerts.consecutive_failures = 0
+        session.scrape_alerts.last_failure_fingerprint = None
         session.now_playing_channel_id = None
         session.stop_playback()
 
@@ -450,6 +463,22 @@ class JukeBot(commands.Bot):
         )
         session.total_tracks_added += 1
 
+    def _build_failure_fingerprint(self, *, url: str, error_summary: str) -> str:
+        parsed = httpx.URL(url)
+        domain_and_path = f"{parsed.host or 'unknown'}{parsed.path or '/'}".lower()
+        return f"{error_summary.strip().lower()}||{domain_and_path}"
+
+    def _dedupe_failures(self, failures: list[ScrapeFailureEntry]) -> list[ScrapeFailureEntry]:
+        deduped: dict[str, ScrapeFailureEntry] = {}
+        for failure in failures:
+            key = self._build_failure_fingerprint(
+                url=failure.url,
+                error_summary=failure.error_summary,
+            )
+            if key not in deduped:
+                deduped[key] = failure
+        return list(deduped.values())
+
     def _record_scrape_failure(
         self,
         *,
@@ -461,17 +490,45 @@ class JukeBot(commands.Bot):
         error_summary: str,
         fallback_attempted: bool = False,
     ) -> None:
-        session.scrape_failures.append(
-            ScrapeFailureEntry(
-                timestamp_utc=datetime.now(timezone.utc).isoformat(),
-                url=url,
-                error_summary=error_summary,
-                guild_id=guild_id,
-                channel_id=channel_id,
-                message_id=message_id,
-                fallback_attempted=fallback_attempted,
-            )
+        failure_entry = ScrapeFailureEntry(
+            timestamp_utc=datetime.now(timezone.utc).isoformat(),
+            url=url,
+            error_summary=error_summary,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            message_id=message_id,
+            fallback_attempted=fallback_attempted,
         )
+        session.scrape_failures.append(failure_entry)
+
+        alerts = session.scrape_alerts
+        now_monotonic = asyncio.get_running_loop().time()
+        fingerprint = self._build_failure_fingerprint(url=url, error_summary=error_summary)
+
+        alerts.pending_failures.append(failure_entry)
+        alerts.recent_failure_timestamps.append(now_monotonic)
+        burst_window = max(1, self.settings.master_dm_burst_window_seconds)
+        alerts.recent_failure_timestamps = [
+            ts for ts in alerts.recent_failure_timestamps if (now_monotonic - ts) <= burst_window
+        ]
+
+        fingerprint_window = 5 * 60
+        fingerprint_events = alerts.fingerprint_timestamps.setdefault(fingerprint, [])
+        fingerprint_events.append(now_monotonic)
+        alerts.fingerprint_timestamps[fingerprint] = [
+            ts for ts in fingerprint_events if (now_monotonic - ts) <= fingerprint_window
+        ]
+
+        if alerts.last_failure_fingerprint == fingerprint:
+            alerts.consecutive_failures += 1
+        else:
+            alerts.last_failure_fingerprint = fingerprint
+            alerts.consecutive_failures = 1
+
+    def _mark_scrape_success(self, *, session: SessionState) -> None:
+        alerts = session.scrape_alerts
+        alerts.consecutive_failures = 0
+        alerts.last_failure_fingerprint = None
 
     async def _send_scrape_failure_report(
         self,
@@ -480,9 +537,37 @@ class JukeBot(commands.Bot):
         session,
         moderator_channel: discord.abc.Messageable | None = None,
         reason: str,
+        force: bool = False,
     ) -> None:
-        if not session.scrape_failures:
+        alerts = session.scrape_alerts
+        if not alerts.pending_failures:
             return
+
+        now_monotonic = asyncio.get_running_loop().time()
+        min_interval = max(1, self.settings.master_dm_min_interval_seconds)
+        burst_threshold = max(1, self.settings.master_dm_burst_threshold)
+
+        recent_failure_count = len(alerts.recent_failure_timestamps)
+        repeated_fingerprint_count = 0
+        if alerts.last_failure_fingerprint is not None:
+            repeated_fingerprint_count = len(
+                alerts.fingerprint_timestamps.get(alerts.last_failure_fingerprint, [])
+            )
+
+        high_severity = (
+            recent_failure_count >= burst_threshold
+            or repeated_fingerprint_count >= 3
+        )
+        periodic_due = (
+            alerts.last_dm_sent_at is None
+            or (now_monotonic - alerts.last_dm_sent_at) >= min_interval
+        )
+
+        if not force and not high_severity and not periodic_due:
+            return
+
+        pending_failures = list(alerts.pending_failures)
+        deduped_failures = self._dedupe_failures(pending_failures)
 
         master_user_id = self.settings.master_user_id
         if master_user_id is None:
@@ -498,9 +583,9 @@ class JukeBot(commands.Bot):
 
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tmp_file:
             tmp_file.write(
-                f"JukeBotx scrape failure report\nGuild ID: {guild_id}\nReason: {reason}\nGenerated UTC: {datetime.now(timezone.utc).isoformat()}\n\n"
+                f"JukeBotx scrape failure report\nGuild ID: {guild_id}\nReason: {reason}\nGenerated UTC: {datetime.now(timezone.utc).isoformat()}\nTotal failures in digest: {len(deduped_failures)}\n\n"
             )
-            for idx, failure in enumerate(session.scrape_failures, start=1):
+            for idx, failure in enumerate(deduped_failures, start=1):
                 tmp_file.write(
                     f"[{idx}] timestamp_utc={failure.timestamp_utc}\n"
                     f"    url={failure.url}\n"
@@ -520,7 +605,8 @@ class JukeBot(commands.Bot):
                 ),
                 file=discord.File(tmp_path, filename=f"scrape_failures_{guild_id}.txt"),
             )
-            session.scrape_failures.clear()
+            alerts.pending_failures.clear()
+            alerts.last_dm_sent_at = now_monotonic
         except discord.NotFound:
             get_event_logger(
                 logger,
@@ -533,11 +619,18 @@ class JukeBot(commands.Bot):
                 master_user_id,
                 guild_id,
             )
-            if moderator_channel is not None:
+            if (
+                moderator_channel is not None
+                and (
+                    alerts.last_channel_warning_at is None
+                    or (now_monotonic - alerts.last_channel_warning_at) >= min_interval
+                )
+            ):
                 try:
                     await moderator_channel.send(
                         "⚠️ Could not deliver scrape failure report (master user not found)."
                     )
+                    alerts.last_channel_warning_at = now_monotonic
                 except discord.HTTPException:
                     pass
         except discord.Forbidden:
@@ -552,11 +645,18 @@ class JukeBot(commands.Bot):
                 master_user_id,
                 guild_id,
             )
-            if moderator_channel is not None:
+            if (
+                moderator_channel is not None
+                and (
+                    alerts.last_channel_warning_at is None
+                    or (now_monotonic - alerts.last_channel_warning_at) >= min_interval
+                )
+            ):
                 try:
                     await moderator_channel.send(
                         "⚠️ Could not DM scrape failure report to MASTER_USER_ID."
                     )
+                    alerts.last_channel_warning_at = now_monotonic
                 except discord.HTTPException:
                     pass
         except discord.HTTPException as exc:
@@ -802,6 +902,12 @@ class JukeBot(commands.Bot):
                         url=url,
                         error_summary=str(exc) or "scrape error",
                     )
+                    await self._send_scrape_failure_report(
+                        guild_id=message.guild.id,
+                        session=session,
+                        moderator_channel=message.channel,
+                        reason="auto-ingest scrape failure",
+                    )
                     self._log_canonical_event(
                         event_name="ingest_failure_scrape",
                         guild_id=message.guild.id,
@@ -842,6 +948,12 @@ class JukeBot(commands.Bot):
                         url=url,
                         error_summary="missing mp3_url",
                     )
+                    await self._send_scrape_failure_report(
+                        guild_id=message.guild.id,
+                        session=session,
+                        moderator_channel=message.channel,
+                        reason="auto-ingest validation failure",
+                    )
                     self._log_canonical_event(
                         event_name="ingest_failure_validation",
                         guild_id=message.guild.id,
@@ -871,6 +983,7 @@ class JukeBot(commands.Bot):
                 asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
                 success_count += 1
+                self._mark_scrape_success(session=session)
                 url_outcomes[url] = {"status": "success", "reason": "queued"}
                 self._log_canonical_event(
                     event_name="ingest_success",
@@ -1063,20 +1176,14 @@ class JukeBot(commands.Bot):
             if stream_session is None:
                 return
 
-            stream, session = stream_session
-            await self._send_scrape_failure_report(
-                guild_id=ctx.guild.id,
-                session=session,
-                moderator_channel=ctx.channel,
-                reason="manual leave command",
-            )
-
+            stream, _ = stream_session
             await self._teardown_voice_session(
                 guild=ctx.guild,
                 voice_channel_id=stream.voice_channel_id,
                 voice_client=ctx.voice_client,
                 reason="manual leave command",
                 channel_id_to_clear=ctx.channel.id,
+                moderator_channel=ctx.channel,
             )
 
             await ctx.send("Left the voice channel. Cleared active stream state for this VC.")

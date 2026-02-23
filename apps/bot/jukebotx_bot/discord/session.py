@@ -37,6 +37,17 @@ class ScrapeFailureEntry:
 
 
 @dataclass
+class ScrapeAlertState:
+    pending_failures: list[ScrapeFailureEntry] = field(default_factory=list)
+    last_dm_sent_at: float | None = None
+    consecutive_failures: int = 0
+    last_failure_fingerprint: str | None = None
+    recent_failure_timestamps: list[float] = field(default_factory=list)
+    fingerprint_timestamps: dict[str, list[float]] = field(default_factory=dict)
+    last_channel_warning_at: float | None = None
+
+
+@dataclass
 class SessionState:
     submissions_open: bool = True
     per_user_limit: int | None = None
@@ -56,6 +67,7 @@ class SessionState:
     last_playback_event_at: float = field(default_factory=time.monotonic)
     now_playing_channel_id: int | None = None
     scrape_failures: list[ScrapeFailureEntry] = field(default_factory=list)
+    scrape_alerts: ScrapeAlertState = field(default_factory=ScrapeAlertState)
 
     def reset(self) -> None:
         self.submissions_open = True
@@ -71,6 +83,7 @@ class SessionState:
         self.dj_remaining = None
         self.queue.clear()
         self.scrape_failures.clear()
+        self.scrape_alerts = ScrapeAlertState()
         self.now_playing_channel_id = None
         self.stop_playback()
 
