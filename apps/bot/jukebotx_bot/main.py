@@ -197,7 +197,7 @@ class JukeBot(commands.Bot):
                 "does NOT contain 'dev'. You are likely using the production bot token in development."
             )
 
-            print(f"Connected as {self.user} (env={self.settings.env})")
+            logging.info("Connected as %s (env=%s)", self.user, self.settings.env)
 
         @self.event
         async def on_message(message: discord.Message) -> None:
@@ -234,7 +234,7 @@ class JukeBot(commands.Bot):
             skipped_playlist = False
             blocked_reason: str | None = None
             limit_reached = False
-            url_outcomes: dict[str, str] = {}
+            url_outcomes: dict[str, dict[str, str]] = {}
             success_count = 0
             failure_count = 0
 
@@ -273,21 +273,30 @@ class JukeBot(commands.Bot):
             for url in urls:
                 if "https://suno.com/playlist/" in url:
                     skipped_playlist = True
-                    url_outcomes[url] = "skipped_playlist"
+                    url_outcomes[url] = {
+                        "status": "skipped_playlist",
+                        "reason": "playlist links require ;playlist command",
+                    }
                     continue
                 if blocked_reason is not None:
-                    url_outcomes[url] = "blocked"
+                    url_outcomes[url] = {"status": "blocked", "reason": blocked_reason}
                     failure_count += 1
                     continue
                 if self._session_limit_reached(session):
                     session.submissions_open = False
                     limit_reached = True
-                    url_outcomes[url] = "blocked"
+                    url_outcomes[url] = {
+                        "status": "blocked",
+                        "reason": "session closed at limit",
+                    }
                     failure_count += 1
                     break
                 if remaining_slots is not None and remaining_slots <= 0:
                     limit_reached = True
-                    url_outcomes[url] = "blocked"
+                    url_outcomes[url] = {
+                        "status": "blocked",
+                        "reason": "per-user submission limit reached",
+                    }
                     failure_count += 1
                     break
                 try:
@@ -301,7 +310,10 @@ class JukeBot(commands.Bot):
                         )
                     )
                 except SunoScrapeError as exc:
-                    url_outcomes[url] = "scrape_failure"
+                    url_outcomes[url] = {
+                        "status": "scrape_failure",
+                        "reason": str(exc) or "scrape error",
+                    }
                     failure_count += 1
                     logging.exception(
                         "Suno ingestion scrape failure for url=%s guild_id=%s channel_id=%s message_id=%s",
@@ -313,7 +325,10 @@ class JukeBot(commands.Bot):
                     continue
 
                 if not result.mp3_url:
-                    url_outcomes[url] = "missing_required_fields"
+                    url_outcomes[url] = {
+                        "status": "missing_required_fields",
+                        "reason": "missing mp3_url",
+                    }
                     failure_count += 1
                     logging.warning(
                         "Suno ingestion missing required fields for url=%s guild_id=%s channel_id=%s message_id=%s",
@@ -341,7 +356,7 @@ class JukeBot(commands.Bot):
                 asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
                 success_count += 1
-                url_outcomes[url] = "success"
+                url_outcomes[url] = {"status": "success", "reason": "queued"}
                 if remaining_slots is not None:
                     remaining_slots -= 1
 
@@ -361,7 +376,7 @@ class JukeBot(commands.Bot):
                     pass
 
             if not added_any and any(
-                outcome in {"scrape_failure", "missing_required_fields"}
+                outcome.get("status") in {"scrape_failure", "missing_required_fields"}
                 for outcome in url_outcomes.values()
             ):
                 try:
