@@ -68,6 +68,13 @@ class SessionState:
     now_playing_channel_id: int | None = None
     scrape_failures: list[ScrapeFailureEntry] = field(default_factory=list)
     scrape_alerts: ScrapeAlertState = field(default_factory=ScrapeAlertState)
+    ingest_attempted_window: int = 0
+    ingest_succeeded_window: int = 0
+    ingest_failed_window: int = 0
+    command_usage_window: int = 0
+    queue_size_window_start: int = 0
+    auto_leave_reasons_window: dict[str, int] = field(default_factory=dict)
+    summary_window_started_at: float = field(default_factory=time.monotonic)
 
     def reset(self) -> None:
         self.submissions_open = True
@@ -84,8 +91,24 @@ class SessionState:
         self.queue.clear()
         self.scrape_failures.clear()
         self.scrape_alerts = ScrapeAlertState()
+        self.ingest_attempted_window = 0
+        self.ingest_succeeded_window = 0
+        self.ingest_failed_window = 0
+        self.command_usage_window = 0
+        self.queue_size_window_start = 0
+        self.auto_leave_reasons_window.clear()
+        self.summary_window_started_at = time.monotonic()
         self.now_playing_channel_id = None
         self.stop_playback()
+
+    def begin_summary_window(self) -> None:
+        self.ingest_attempted_window = 0
+        self.ingest_succeeded_window = 0
+        self.ingest_failed_window = 0
+        self.command_usage_window = 0
+        self.queue_size_window_start = len(self.queue)
+        self.auto_leave_reasons_window.clear()
+        self.summary_window_started_at = time.monotonic()
 
     def stop_playback(self) -> None:
         if self.now_playing is not None:
@@ -178,5 +201,10 @@ class SessionManager:
 
     def for_guild(self, guild_id: int) -> SessionState:
         if guild_id not in self._sessions:
-            self._sessions[guild_id] = SessionState()
+            session = SessionState()
+            session.queue_size_window_start = len(session.queue)
+            self._sessions[guild_id] = session
         return self._sessions[guild_id]
+
+    def sessions(self) -> dict[int, SessionState]:
+        return self._sessions
