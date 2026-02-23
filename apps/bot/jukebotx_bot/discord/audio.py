@@ -27,6 +27,12 @@ _FFMPEG_BEFORE_OPTIONS_EXTRA = os.getenv("FFMPEG_BEFORE_OPTIONS_EXTRA", "").stri
 _FFMPEG_OPTIONS_EXTRA = os.getenv("FFMPEG_OPTIONS_EXTRA", "").strip()
 _FFMPEG_PROBESIZE = os.getenv("FFMPEG_PROBESIZE", "").strip()
 _FFMPEG_ANALYZEDURATION = os.getenv("FFMPEG_ANALYZEDURATION", "").strip()
+_PROBE_DURATION_BEFORE_PLAY = os.getenv("PROBE_DURATION_BEFORE_PLAY", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class GuildAudioController:
@@ -50,7 +56,8 @@ class GuildAudioController:
 
             await self._wait_for_opus_ready(track)
             playback_url = await self._resolve_playback_url(track)
-            track.duration_seconds = await self._probe_duration_seconds(playback_url)
+            if _PROBE_DURATION_BEFORE_PLAY:
+                track.duration_seconds = await self._probe_duration_seconds(playback_url)
 
             try:
                 source = self._build_source(playback_url)
@@ -72,7 +79,21 @@ class GuildAudioController:
                 )
 
             voice_client.play(source, after=_after_playback)
+
+            if not _PROBE_DURATION_BEFORE_PLAY and self._loop is not None:
+                self._loop.create_task(self._probe_duration_after_playback_start(track, playback_url))
+
             return track
+
+    async def _probe_duration_after_playback_start(self, track: Track, playback_url: str) -> None:
+        duration = await self._probe_duration_seconds(playback_url)
+        if duration is None:
+            return
+
+        async with self._lock:
+            if self.session.now_playing is not track:
+                return
+            track.duration_seconds = duration
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
         async with self._lock:
