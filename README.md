@@ -192,6 +192,26 @@ These names may evolve, but the usual suspects are:
 * `OPUS_STORAGE_PUBLIC_BASE_URL` — public base URL for Opus objects (optional)
 * `OPUS_STORAGE_SIGNED_URL_TTL_SECONDS` — TTL for signed URLs
 * `OPUS_STORAGE_TTL_SECONDS` — TTL for objects before refresh
+* `FFMPEG_PROBESIZE` — optional ffmpeg `-probesize` value used before input for stream probing
+* `FFMPEG_ANALYZEDURATION` — optional ffmpeg `-analyzeduration` value used before input analysis
+* `FFMPEG_BEFORE_OPTIONS_EXTRA` — optional extra flags appended to ffmpeg `before_options`
+* `FFMPEG_OPTIONS_EXTRA` — optional extra flags appended to ffmpeg output options (for resampling/normalization tuning)
+
+### Audio / ops tuning
+
+By default, the bot uses conservative ffmpeg playback flags:
+
+* `before_options`: `-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5`
+* `options`: `-vn`
+
+If needed for difficult streams or custom audio processing, set one or more of:
+
+* `FFMPEG_PROBESIZE`
+* `FFMPEG_ANALYZEDURATION`
+* `FFMPEG_BEFORE_OPTIONS_EXTRA`
+* `FFMPEG_OPTIONS_EXTRA`
+
+When these variables are unset, behavior remains unchanged from defaults above.
 
 > Do not commit `.env`. The repo should ignore it.
 

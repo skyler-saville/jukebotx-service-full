@@ -23,6 +23,10 @@ _OPUS_READY_TIMEOUT_SECONDS = float(os.getenv("OPUS_READY_TIMEOUT_SECONDS", "30"
 _OPUS_READY_POLL_SECONDS = float(os.getenv("OPUS_READY_POLL_SECONDS", "2"))
 _FFPROBE_TIMEOUT_SECONDS = float(os.getenv("FFPROBE_TIMEOUT_SECONDS", "10"))
 _FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
+_FFMPEG_BEFORE_OPTIONS_EXTRA = os.getenv("FFMPEG_BEFORE_OPTIONS_EXTRA", "").strip()
+_FFMPEG_OPTIONS_EXTRA = os.getenv("FFMPEG_OPTIONS_EXTRA", "").strip()
+_FFMPEG_PROBESIZE = os.getenv("FFMPEG_PROBESIZE", "").strip()
+_FFMPEG_ANALYZEDURATION = os.getenv("FFMPEG_ANALYZEDURATION", "").strip()
 
 
 class GuildAudioController:
@@ -163,10 +167,23 @@ class GuildAudioController:
 
     def _build_source(self, url: str) -> discord.FFmpegOpusAudio:
         self._assert_audio_url(url)
+
+        before_option_parts = ["-reconnect 1", "-reconnect_streamed 1", "-reconnect_delay_max 5"]
+        if _FFMPEG_PROBESIZE:
+            before_option_parts.append(f"-probesize {_FFMPEG_PROBESIZE}")
+        if _FFMPEG_ANALYZEDURATION:
+            before_option_parts.append(f"-analyzeduration {_FFMPEG_ANALYZEDURATION}")
+        if _FFMPEG_BEFORE_OPTIONS_EXTRA:
+            before_option_parts.append(_FFMPEG_BEFORE_OPTIONS_EXTRA)
+
+        option_parts = ["-vn"]
+        if _FFMPEG_OPTIONS_EXTRA:
+            option_parts.append(_FFMPEG_OPTIONS_EXTRA)
+
         source = discord.FFmpegOpusAudio(
             url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options="-vn",
+            before_options=" ".join(before_option_parts),
+            options=" ".join(option_parts),
             stderr=subprocess.PIPE,
         )
         self._start_ffmpeg_logger(source)
