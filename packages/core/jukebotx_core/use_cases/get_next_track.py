@@ -27,8 +27,5 @@ class GetNextTrack:
         if qi is None:
             return None
 
-        # We need a way to load by track_id; simplest is add a method, but
-        # we can also add it later. For now, assume track_repo can resolve URL-only.
-        # If you haven't implemented get_by_id yet, add it to the port and repos.
-        track = await self._track_repo.get_by_id(qi.track_id)  # type: ignore[attr-defined]
+        track = await self._track_repo.get_by_id(qi.track_id)
         return NextTrackResult(queue_item_id=qi.id, track=track)
