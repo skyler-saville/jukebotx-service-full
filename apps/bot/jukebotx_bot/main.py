@@ -120,6 +120,13 @@ class JukeBot(commands.Bot):
         Runs once, before on_ready, after the bot connects.
         """
         await init_db()
+        self._log_canonical_event(
+            event_name="db_init_complete",
+            guild_id=None,
+            channel_id=None,
+            user_id=None,
+            trigger="setup_hook",
+        )
 
         # If you later convert cogs to extensions, load them here:
         # await self.load_extension("jukebotx_bot.discord.cogs.queue")
@@ -129,6 +136,13 @@ class JukeBot(commands.Bot):
             self._auto_leave_task = asyncio.create_task(self._auto_leave_loop())
 
     async def close(self) -> None:
+        self._log_canonical_event(
+            event_name="bot_shutdown",
+            guild_id=None,
+            channel_id=None,
+            user_id=getattr(self.user, "id", None),
+            trigger="bot_close",
+        )
         task = self._auto_leave_task
         if task is not None:
             task.cancel()
@@ -145,6 +159,26 @@ class JukeBot(commands.Bot):
 
     def _get_audio(self, ctx: commands.Context) -> AudioControllerManager:
         return self.deps.audio_manager
+
+    def _log_canonical_event(
+        self,
+        *,
+        event_name: str,
+        guild_id: int | None,
+        channel_id: int | None,
+        user_id: int | None,
+        trigger: str,
+        **context: object,
+    ) -> None:
+        get_event_logger(
+            logger,
+            event_name=event_name,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            trigger=trigger,
+            **context,
+        ).info("Canonical event emitted: %s", event_name)
 
     def _upsert_stream(self, stream: StreamRecord) -> StreamRecord:
         guild_streams = self._streams.setdefault(stream.guild_id, [])
@@ -206,6 +240,13 @@ class JukeBot(commands.Bot):
             guild.id,
             voice_channel_id,
             reason,
+        )
+        self._log_canonical_event(
+            event_name="session_reset",
+            guild_id=guild.id,
+            channel_id=voice_channel_id,
+            user_id=None,
+            trigger=reason,
         )
 
     def _should_auto_leave(
@@ -283,6 +324,15 @@ class JukeBot(commands.Bot):
             )
             if reason is None:
                 continue
+
+            self._log_canonical_event(
+                event_name="auto_leave_triggered",
+                guild_id=guild.id,
+                channel_id=stream.voice_channel_id,
+                user_id=stream.owner_user_id,
+                trigger="auto_leave_loop",
+                reason=reason,
+            )
 
             announce_channel_id = session.now_playing_channel_id
             await self._teardown_voice_session(
@@ -595,6 +645,14 @@ class JukeBot(commands.Bot):
             get_event_logger(logger, event_name="discord_ready").info(
                 "Connected as %s (env=%s)", self.user, self.settings.env
             )
+            self._log_canonical_event(
+                event_name="bot_ready",
+                guild_id=None,
+                channel_id=None,
+                user_id=self.user.id,
+                trigger="on_ready",
+                env=self.settings.env,
+            )
 
         @self.event
         async def on_message(message: discord.Message) -> None:
@@ -697,6 +755,15 @@ class JukeBot(commands.Bot):
                     failure_count += 1
                     break
                 try:
+                    self._log_canonical_event(
+                        event_name="ingest_attempt",
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        user_id=message.author.id,
+                        trigger="auto_message_ingest",
+                        source="message_url",
+                        suno_url=url,
+                    )
                     result = await self.deps.ingest_use_case.execute(
                         IngestSunoLinkInput(
                             guild_id=message.guild.id,
@@ -735,6 +802,16 @@ class JukeBot(commands.Bot):
                         url=url,
                         error_summary=str(exc) or "scrape error",
                     )
+                    self._log_canonical_event(
+                        event_name="ingest_failure_scrape",
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        user_id=message.author.id,
+                        trigger="auto_message_ingest",
+                        source="message_url",
+                        suno_url=url,
+                        error_type=type(exc).__name__,
+                    )
                     continue
 
                 if not result.mp3_url:
@@ -765,6 +842,16 @@ class JukeBot(commands.Bot):
                         url=url,
                         error_summary="missing mp3_url",
                     )
+                    self._log_canonical_event(
+                        event_name="ingest_failure_validation",
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        user_id=message.author.id,
+                        trigger="auto_message_ingest",
+                        source="message_url",
+                        suno_url=url,
+                        validation_error="missing_mp3_url",
+                    )
                     continue
 
                 opus_url = self._build_opus_url(result.track_id)
@@ -785,6 +872,16 @@ class JukeBot(commands.Bot):
                 added_any = True
                 success_count += 1
                 url_outcomes[url] = {"status": "success", "reason": "queued"}
+                self._log_canonical_event(
+                    event_name="ingest_success",
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id,
+                    user_id=message.author.id,
+                    trigger="auto_message_ingest",
+                    source="message_url",
+                    suno_url=url,
+                    queue_size=len(session.queue),
+                )
                 if remaining_slots is not None:
                     remaining_slots -= 1
 
@@ -943,6 +1040,14 @@ class JukeBot(commands.Bot):
             session = self.deps.session_manager.for_guild(ctx.guild.id)
             session.last_playback_event_at = asyncio.get_running_loop().time()
             await ctx.send(f"Joined {channel.name}! Stream is now active.")
+            self._log_canonical_event(
+                event_name="session_join",
+                guild_id=ctx.guild.id,
+                channel_id=channel.id,
+                user_id=ctx.author.id,
+                trigger=";join",
+                source="command",
+            )
 
         @self.command(name="leave")
         async def leave(ctx: commands.Context) -> None:
@@ -975,6 +1080,14 @@ class JukeBot(commands.Bot):
             )
 
             await ctx.send("Left the voice channel. Cleared active stream state for this VC.")
+            self._log_canonical_event(
+                event_name="session_leave",
+                guild_id=ctx.guild.id,
+                channel_id=stream.voice_channel_id,
+                user_id=ctx.author.id,
+                trigger=";leave",
+                source="command",
+            )
 
         @self.command(name="setlist")
         async def setlist(ctx: commands.Context) -> None:
@@ -1227,6 +1340,15 @@ class JukeBot(commands.Bot):
                 ingest_url = item.suno_track_url or item.mp3_url
                 if ingest_url is not None:
                     try:
+                        self._log_canonical_event(
+                            event_name="ingest_attempt",
+                            guild_id=ctx.guild.id,
+                            channel_id=ctx.channel.id,
+                            user_id=ctx.author.id,
+                            trigger=";playlist",
+                            source="playlist_item",
+                            suno_url=ingest_url,
+                        )
                         ingest_result = await self.deps.ingest_use_case.execute(
                             IngestSunoLinkInput(
                                 guild_id=ctx.guild.id,
@@ -1246,6 +1368,16 @@ class JukeBot(commands.Bot):
                             message_id=ctx.message.id,
                             error_type=type(exc).__name__,
                         ).warning("Failed to ingest Suno URL %s: %s", ingest_url, exc)
+                        self._log_canonical_event(
+                            event_name="ingest_failure_scrape",
+                            guild_id=ctx.guild.id,
+                            channel_id=ctx.channel.id,
+                            user_id=ctx.author.id,
+                            trigger=";playlist",
+                            source="playlist_item",
+                            suno_url=ingest_url,
+                            error_type=type(exc).__name__,
+                        )
                     else:
                         if ingest_result.track_title:
                             track_title = ingest_result.track_title
@@ -1256,6 +1388,15 @@ class JukeBot(commands.Bot):
                         media_url = ingest_result.media_url
                         opus_url = self._build_opus_url(ingest_result.track_id)
                         track_id = ingest_result.track_id
+                        self._log_canonical_event(
+                            event_name="ingest_success",
+                            guild_id=ctx.guild.id,
+                            channel_id=ctx.channel.id,
+                            user_id=ctx.author.id,
+                            trigger=";playlist",
+                            source="playlist_item",
+                            suno_url=ingest_url,
+                        )
 
                 track = Track(
                     audio_url=audio_url,
@@ -1295,6 +1436,16 @@ class JukeBot(commands.Bot):
                 return
 
             session.submissions_open = False
+            self._log_canonical_event(
+                event_name="playlist_ingest_summary",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";playlist",
+                source="command",
+                accepted_count=accepted_count,
+                total_items=len(playlist_data.items),
+            )
             if accepted_count < len(playlist_data.items):
                 await ctx.send(
                     "Queued "
@@ -1419,6 +1570,15 @@ class JukeBot(commands.Bot):
             session.now_playing_channel_id = ctx.channel.id
             embed = build_now_playing_embed(started)
             await ctx.send(embed=embed)
+            self._log_canonical_event(
+                event_name="playback_started",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";p",
+                source="command",
+                track_title=started.title,
+            )
 
         @self.command(name="n")
         async def skip(ctx: commands.Context) -> None:
@@ -1443,11 +1603,30 @@ class JukeBot(commands.Bot):
             started = await audio.skip(ctx.voice_client)
             if started is None:
                 await ctx.send("Skipped. Queue is now empty; playback stopped.")
+                self._log_canonical_event(
+                    event_name="playback_skipped",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";n",
+                    source="command",
+                    next_track_started=False,
+                )
                 return
 
             session.now_playing_channel_id = ctx.channel.id
             embed = build_now_playing_embed(started)
             await ctx.send(content="Skipped.", embed=embed)
+            self._log_canonical_event(
+                event_name="playback_skipped",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";n",
+                source="command",
+                next_track_started=True,
+                track_title=started.title,
+            )
 
         @self.command(name="pause")
         async def pause(ctx: commands.Context) -> None:
@@ -1473,6 +1652,14 @@ class JukeBot(commands.Bot):
 
             ctx.voice_client.pause()
             await ctx.send("Playback paused.")
+            self._log_canonical_event(
+                event_name="playback_paused",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";pause",
+                source="command",
+            )
 
         @self.command(name="resume")
         async def resume(ctx: commands.Context) -> None:
@@ -1498,6 +1685,14 @@ class JukeBot(commands.Bot):
 
             ctx.voice_client.resume()
             await ctx.send("Playback resumed.")
+            self._log_canonical_event(
+                event_name="playback_resumed",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";resume",
+                source="command",
+            )
 
         @self.command(name="s")
         async def stop(ctx: commands.Context) -> None:
@@ -1521,6 +1716,14 @@ class JukeBot(commands.Bot):
             audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             await audio.stop(ctx.voice_client)
             await ctx.send("Playback stopped.")
+            self._log_canonical_event(
+                event_name="playback_stopped",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";s",
+                source="command",
+            )
 
         @self.command(name="clear")
         async def clear(ctx: commands.Context) -> None:
@@ -1539,6 +1742,14 @@ class JukeBot(commands.Bot):
             _, session = stream_session
             session.queue.clear()
             await ctx.send("Queue cleared.")
+            self._log_canonical_event(
+                event_name="queue_cleared",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";clear",
+                source="command",
+            )
 
         @self.command(name="remove")
         async def remove(ctx: commands.Context, index: int) -> None:
@@ -1606,6 +1817,16 @@ class JukeBot(commands.Bot):
                 await ctx.send(
                     f"Session total track cap set to {session_limit} (counts all tracks added this session)."
                 )
+                self._log_canonical_event(
+                    event_name="limit_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";limit --session",
+                    source="command",
+                    limit_type="session_total",
+                    limit_value=session_limit,
+                )
                 return
 
             if len(args) != 1:
@@ -1624,6 +1845,16 @@ class JukeBot(commands.Bot):
 
             session.per_user_limit = limit_value
             await ctx.send(f"Per-user submission limit set to {limit_value}.")
+            self._log_canonical_event(
+                event_name="limit_changed",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";limit",
+                source="command",
+                limit_type="per_user",
+                limit_value=limit_value,
+            )
 
         @self.command(name="autoplay")
         async def autoplay(ctx: commands.Context, value: Optional[str] = None) -> None:
@@ -1645,11 +1876,29 @@ class JukeBot(commands.Bot):
                 session.now_playing_channel_id = ctx.channel.id
                 session.set_autoplay(None)
                 await ctx.send("Autoplay enabled until queue is empty.")
+                self._log_canonical_event(
+                    event_name="autoplay_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";autoplay",
+                    source="command",
+                    mode="unbounded",
+                )
                 return
 
             if value.lower() == "off":
                 session.disable_autoplay()
                 await ctx.send("Autoplay disabled.")
+                self._log_canonical_event(
+                    event_name="autoplay_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";autoplay off",
+                    source="command",
+                    mode="off",
+                )
                 return
 
             try:
@@ -1665,6 +1914,16 @@ class JukeBot(commands.Bot):
             session.now_playing_channel_id = ctx.channel.id
             session.set_autoplay(remaining)
             await ctx.send(f"Autoplay enabled for the next {remaining} track(s).")
+            self._log_canonical_event(
+                event_name="autoplay_changed",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";autoplay <count>",
+                source="command",
+                mode="bounded",
+                remaining=remaining,
+            )
 
         @self.command(name="cooldown")
         async def cooldown(ctx: commands.Context, value: Optional[str] = None) -> None:
@@ -1686,6 +1945,16 @@ class JukeBot(commands.Bot):
                 session.cooldown_mode = CooldownMode.TIME
                 session.submission_cooldown_seconds = 15 * 60
                 await ctx.send("Submission cooldown set to 15 minutes.")
+                self._log_canonical_event(
+                    event_name="cooldown_mode_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";cooldown",
+                    source="command",
+                    mode="time",
+                    cooldown_seconds=session.submission_cooldown_seconds,
+                )
                 return
 
             lowered = value.lower()
@@ -1695,12 +1964,30 @@ class JukeBot(commands.Bot):
                 await ctx.send(
                     "Submission cooldown set to queue mode (one active track per user)."
                 )
+                self._log_canonical_event(
+                    event_name="cooldown_mode_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";cooldown -queue",
+                    source="command",
+                    mode="queue",
+                )
                 return
 
             if lowered == "off":
                 session.cooldown_mode = CooldownMode.OFF
                 session.submission_cooldown_seconds = 0
                 await ctx.send("⚠️ Submission cooldown has been deactivated.")
+                self._log_canonical_event(
+                    event_name="cooldown_mode_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";cooldown off",
+                    source="command",
+                    mode="off",
+                )
                 return
 
             try:
@@ -1718,6 +2005,16 @@ class JukeBot(commands.Bot):
             session.cooldown_mode = CooldownMode.TIME
             session.submission_cooldown_seconds = minutes * 60
             await ctx.send(f"Submission cooldown set to {minutes} minute(s).")
+            self._log_canonical_event(
+                event_name="cooldown_mode_changed",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";cooldown <minutes>",
+                source="command",
+                mode="time",
+                cooldown_seconds=session.submission_cooldown_seconds,
+            )
 
         @self.command(name="dj")
         async def dj(ctx: commands.Context, value: Optional[str] = None) -> None:
@@ -1739,11 +2036,29 @@ class JukeBot(commands.Bot):
                 session.now_playing_channel_id = ctx.channel.id
                 session.set_dj(None)
                 await ctx.send("DJ mode enabled until queue is empty.")
+                self._log_canonical_event(
+                    event_name="dj_mode_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";dj",
+                    source="command",
+                    mode="unbounded",
+                )
                 return
 
             if value.lower() == "off":
                 session.disable_dj()
                 await ctx.send("DJ mode disabled.")
+                self._log_canonical_event(
+                    event_name="dj_mode_changed",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    user_id=ctx.author.id,
+                    trigger=";dj off",
+                    source="command",
+                    mode="off",
+                )
                 return
 
             try:
@@ -1759,6 +2074,16 @@ class JukeBot(commands.Bot):
             session.now_playing_channel_id = ctx.channel.id
             session.set_dj(remaining)
             await ctx.send(f"DJ mode enabled for the next {remaining} track(s).")
+            self._log_canonical_event(
+                event_name="dj_mode_changed",
+                guild_id=ctx.guild.id,
+                channel_id=ctx.channel.id,
+                user_id=ctx.author.id,
+                trigger=";dj <count>",
+                source="command",
+                mode="bounded",
+                remaining=remaining,
+            )
 
 
 def build_bot() -> JukeBot:
