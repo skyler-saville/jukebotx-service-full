@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from jukebotx_core.domain import evaluate_submission_duplication_policy
 from jukebotx_core.ports.repositories import (
     QueueItemCreate,
     QueueRepository,
@@ -91,7 +92,10 @@ class IngestSunoLink:
             guild_id=data.guild_id,
             track_id=track.id,
         )
-        is_dup = prior is not None
+        decision = evaluate_submission_duplication_policy(
+            prior_submission_exists=prior is not None,
+            auto_enqueue_requested=data.auto_enqueue,
+        )
 
         # Always create a submission record (you may want this even if duplicate),
         # but you can choose to skip creating if you want "hard dedupe".
@@ -106,7 +110,7 @@ class IngestSunoLink:
         )
 
         queued = False
-        if data.auto_enqueue and (not is_dup):
+        if decision.should_enqueue:
             await self._queue_repo.enqueue(
                 QueueItemCreate(
                     guild_id=data.guild_id,
@@ -118,7 +122,7 @@ class IngestSunoLink:
 
         return IngestSunoLinkResult(
             track_id=track.id,
-            is_duplicate_in_guild=is_dup,
+            is_duplicate_in_guild=decision.is_duplicate_in_guild,
             suno_url=track.suno_url,
             track_title=track.title,
             artist_display=track.artist_display,
