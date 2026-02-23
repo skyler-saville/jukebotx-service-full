@@ -53,6 +53,7 @@ class SessionState:
     queue: list[Track] = field(default_factory=list)
     now_playing: Track | None = None
     now_playing_started_at: float | None = None
+    last_playback_event_at: float = field(default_factory=time.monotonic)
     now_playing_channel_id: int | None = None
     scrape_failures: list[ScrapeFailureEntry] = field(default_factory=list)
 
@@ -74,6 +75,8 @@ class SessionState:
         self.stop_playback()
 
     def stop_playback(self) -> None:
+        if self.now_playing is not None:
+            self.last_playback_event_at = time.monotonic()
         self.now_playing = None
         self.now_playing_started_at = None
 
@@ -141,6 +144,7 @@ class SessionState:
         track = self.queue.pop(0)
         self.now_playing = track
         self.now_playing_started_at = time.monotonic()
+        self.last_playback_event_at = self.now_playing_started_at
 
         if self.autoplay_enabled and self.autoplay_remaining is not None:
             self.autoplay_remaining -= 1
