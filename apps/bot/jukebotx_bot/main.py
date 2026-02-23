@@ -29,6 +29,7 @@ from jukebotx_bot.discord.session import (
     Track,
 )
 from jukebotx_bot.discord.suno import extract_suno_urls
+from jukebotx_bot.logging_config import configure_logging, get_event_logger
 from jukebotx_bot.settings import load_bot_settings
 from jukebotx_core.use_cases.ingest_suno_links import (
     IngestSunoLink,
@@ -46,6 +47,8 @@ from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
 AUTO_LEAVE_POLL_SECONDS = float(os.getenv("AUTO_LEAVE_POLL_SECONDS", "30"))
 AUTO_LEAVE_IDLE_SECONDS = float(os.getenv("AUTO_LEAVE_IDLE_SECONDS", "600"))
 AUTO_LEAVE_SOLO_SECONDS = float(os.getenv("AUTO_LEAVE_SOLO_SECONDS", "120"))
+
+logger = logging.getLogger(__name__)
 
 
 def _is_mod(member: discord.Member) -> bool:
@@ -104,8 +107,6 @@ class JukeBot(commands.Bot):
         self.deps = deps
         self._streams: dict[int, list[StreamRecord]] = {}
         self._auto_leave_task: asyncio.Task[None] | None = None
-
-        logging.basicConfig(level=logging.INFO)
 
         self.remove_command("help")
 
@@ -195,7 +196,12 @@ class JukeBot(commands.Bot):
                 channel_id=channel_id_to_clear,
             )
 
-        logging.info(
+        get_event_logger(
+            logger,
+            event_name="voice_session_ended",
+            guild_id=guild.id,
+            channel_id=voice_channel_id,
+        ).info(
             "Ended voice session for guild %s voice_channel %s (%s)",
             guild.id,
             voice_channel_id,
@@ -234,7 +240,11 @@ class JukeBot(commands.Bot):
             try:
                 await self._run_auto_leave_check()
             except Exception as exc:  # pragma: no cover - defensive
-                logging.warning("Auto-leave check failed: %s", exc)
+                get_event_logger(
+                    logger,
+                    event_name="auto_leave_check_failed",
+                    error_type=type(exc).__name__,
+                ).warning("Auto-leave check failed: %s", exc)
 
     async def _run_auto_leave_check(self) -> None:
         now_epoch = datetime.now(timezone.utc).timestamp()
@@ -372,7 +382,11 @@ class JukeBot(commands.Bot):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.get(status_url)
         except Exception as exc:
-            logging.warning("Failed to prefetch opus status for %s: %s", track_id, exc)
+            get_event_logger(
+                logger,
+                event_name="opus_prefetch_failed",
+                error_type=type(exc).__name__,
+            ).warning("Failed to prefetch opus status for %s: %s", track_id, exc)
 
     def _session_limit_reached(self, session) -> bool:
         return (
@@ -422,7 +436,11 @@ class JukeBot(commands.Bot):
 
         master_user_id = self.settings.master_user_id
         if master_user_id is None:
-            logging.info(
+            get_event_logger(
+                logger,
+                event_name="scrape_report_skipped",
+                guild_id=guild_id,
+            ).info(
                 "Skipping scrape failure report for guild_id=%s: MASTER_USER_ID is not configured.",
                 guild_id,
             )
@@ -454,7 +472,13 @@ class JukeBot(commands.Bot):
             )
             session.scrape_failures.clear()
         except discord.NotFound:
-            logging.warning(
+            get_event_logger(
+                logger,
+                event_name="scrape_report_master_user_not_found",
+                guild_id=guild_id,
+                user_id=master_user_id,
+                error_type="NotFound",
+            ).warning(
                 "MASTER_USER_ID user not found for scrape failure report (master_user_id=%s guild_id=%s)",
                 master_user_id,
                 guild_id,
@@ -467,7 +491,13 @@ class JukeBot(commands.Bot):
                 except discord.HTTPException:
                     pass
         except discord.Forbidden:
-            logging.warning(
+            get_event_logger(
+                logger,
+                event_name="scrape_report_dm_forbidden",
+                guild_id=guild_id,
+                user_id=master_user_id,
+                error_type="Forbidden",
+            ).warning(
                 "DM forbidden while sending scrape failure report to master user (master_user_id=%s guild_id=%s)",
                 master_user_id,
                 guild_id,
@@ -480,7 +510,13 @@ class JukeBot(commands.Bot):
                 except discord.HTTPException:
                     pass
         except discord.HTTPException as exc:
-            logging.warning(
+            get_event_logger(
+                logger,
+                event_name="scrape_report_http_error",
+                guild_id=guild_id,
+                user_id=master_user_id,
+                error_type=type(exc).__name__,
+            ).warning(
                 "HTTP error while sending scrape failure report (master_user_id=%s guild_id=%s): %s",
                 master_user_id,
                 guild_id,
@@ -490,7 +526,12 @@ class JukeBot(commands.Bot):
             try:
                 os.remove(tmp_path)
             except OSError:
-                logging.warning("Failed to delete temp scrape report file: %s", tmp_path)
+                get_event_logger(
+                    logger,
+                    event_name="scrape_report_tempfile_delete_failed",
+                    guild_id=guild_id,
+                    error_type="OSError",
+                ).warning("Failed to delete temp scrape report file: %s", tmp_path)
 
     # -----------------------------
     # Events
@@ -551,7 +592,9 @@ class JukeBot(commands.Bot):
                 "does NOT contain 'dev'. You are likely using the production bot token in development."
             )
 
-            logging.info("Connected as %s (env=%s)", self.user, self.settings.env)
+            get_event_logger(logger, event_name="discord_ready").info(
+                "Connected as %s (env=%s)", self.user, self.settings.env
+            )
 
         @self.event
         async def on_message(message: discord.Message) -> None:
@@ -669,7 +712,15 @@ class JukeBot(commands.Bot):
                         "reason": str(exc) or "scrape error",
                     }
                     failure_count += 1
-                    logging.exception(
+                    get_event_logger(
+                        logger,
+                        event_name="suno_ingest_scrape_failure",
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        user_id=message.author.id,
+                        message_id=message.id,
+                        error_type=type(exc).__name__,
+                    ).exception(
                         "Suno ingestion scrape failure for url=%s guild_id=%s channel_id=%s message_id=%s",
                         url,
                         message.guild.id,
@@ -692,7 +743,14 @@ class JukeBot(commands.Bot):
                         "reason": "missing mp3_url",
                     }
                     failure_count += 1
-                    logging.warning(
+                    get_event_logger(
+                        logger,
+                        event_name="suno_ingest_missing_required_fields",
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        user_id=message.author.id,
+                        message_id=message.id,
+                    ).warning(
                         "Suno ingestion missing required fields for url=%s guild_id=%s channel_id=%s message_id=%s",
                         url,
                         message.guild.id,
@@ -987,7 +1045,14 @@ class JukeBot(commands.Bot):
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    logging.warning("Failed to delete temp setlist file: %s", tmp_path)
+                    get_event_logger(
+                        logger,
+                        event_name="setlist_tempfile_delete_failed",
+                        guild_id=ctx.guild.id if ctx.guild is not None else None,
+                        channel_id=ctx.channel.id,
+                        user_id=ctx.author.id,
+                        error_type="OSError",
+                    ).warning("Failed to delete temp setlist file: %s", tmp_path)
 
             await ctx.send("Setlist sent via DM.")
 
@@ -1172,9 +1237,15 @@ class JukeBot(commands.Bot):
                             )
                         )
                     except SunoScrapeError as exc:
-                        logging.warning(
-                            "Failed to ingest Suno URL %s: %s", ingest_url, exc
-                        )
+                        get_event_logger(
+                            logger,
+                            event_name="playlist_ingest_failed",
+                            guild_id=ctx.guild.id,
+                            channel_id=ctx.channel.id,
+                            user_id=ctx.author.id,
+                            message_id=ctx.message.id,
+                            error_type=type(exc).__name__,
+                        ).warning("Failed to ingest Suno URL %s: %s", ingest_url, exc)
                     else:
                         if ingest_result.track_title:
                             track_title = ingest_result.track_title
@@ -1724,6 +1795,7 @@ def build_bot() -> JukeBot:
 
 def main() -> None:
     """Process entrypoint."""
+    configure_logging()
     bot = build_bot()
     bot.run(bot.settings.active_discord_token)
 
