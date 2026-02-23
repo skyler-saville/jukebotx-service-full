@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import csv
+import contextlib
 import logging
 import math
 import os
@@ -40,6 +41,11 @@ from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 from jukebotx_infra.suno.client import SunoScrapeError
 from jukebotx_infra.suno.fallback_client import FallbackSunoClient
 from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
+
+
+AUTO_LEAVE_POLL_SECONDS = float(os.getenv("AUTO_LEAVE_POLL_SECONDS", "30"))
+AUTO_LEAVE_IDLE_SECONDS = float(os.getenv("AUTO_LEAVE_IDLE_SECONDS", "600"))
+AUTO_LEAVE_SOLO_SECONDS = float(os.getenv("AUTO_LEAVE_SOLO_SECONDS", "120"))
 
 
 def _is_mod(member: discord.Member) -> bool:
@@ -97,6 +103,7 @@ class JukeBot(commands.Bot):
         self.settings = settings
         self.deps = deps
         self._streams: dict[int, list[StreamRecord]] = {}
+        self._auto_leave_task: asyncio.Task[None] | None = None
 
         logging.basicConfig(level=logging.INFO)
 
@@ -117,6 +124,18 @@ class JukeBot(commands.Bot):
         # await self.load_extension("jukebotx_bot.discord.cogs.queue")
         # await self.load_extension("jukebotx_bot.discord.cogs.config")
 
+        if self._auto_leave_task is None:
+            self._auto_leave_task = asyncio.create_task(self._auto_leave_loop())
+
+    async def close(self) -> None:
+        task = self._auto_leave_task
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            self._auto_leave_task = None
+        await super().close()
+
     # -----------------------------
     # Internal helpers
     # -----------------------------
@@ -134,6 +153,142 @@ class JukeBot(commands.Bot):
                 return stream
         guild_streams.append(stream)
         return stream
+
+    def _remove_active_stream(self, *, guild_id: int, voice_channel_id: int) -> None:
+        guild_streams = self._streams.get(guild_id, [])
+        for existing in guild_streams:
+            if existing.voice_channel_id == voice_channel_id and existing.status == "active":
+                existing.status = "ended"
+                break
+        self._streams[guild_id] = [
+            existing
+            for existing in guild_streams
+            if existing.status == "active"
+        ]
+
+    async def _teardown_voice_session(
+        self,
+        *,
+        guild: discord.Guild,
+        voice_channel_id: int,
+        voice_client: discord.VoiceClient | None,
+        reason: str,
+        channel_id_to_clear: int | None = None,
+    ) -> None:
+        session = self.deps.session_manager.for_guild(guild.id)
+        session.queue.clear()
+        session.scrape_failures.clear()
+        session.now_playing_channel_id = None
+        session.stop_playback()
+
+        if voice_client is not None:
+            audio = self.deps.audio_manager.for_guild(guild.id, session)
+            await audio.stop(voice_client)
+            await voice_client.disconnect()
+
+        self._remove_active_stream(guild_id=guild.id, voice_channel_id=voice_channel_id)
+
+        await self.deps.queue_repo.clear(guild_id=guild.id)
+        if channel_id_to_clear is not None:
+            await self.deps.submission_repo.clear_for_channel(
+                guild_id=guild.id,
+                channel_id=channel_id_to_clear,
+            )
+
+        logging.info(
+            "Ended voice session for guild %s voice_channel %s (%s)",
+            guild.id,
+            voice_channel_id,
+            reason,
+        )
+
+    def _should_auto_leave(
+        self,
+        *,
+        session: SessionState,
+        stream: StreamRecord,
+        voice_client: discord.VoiceClient,
+        now_epoch: float,
+        now_monotonic: float,
+    ) -> str | None:
+        channel = getattr(voice_client, "channel", None)
+        if channel is None:
+            return None
+
+        members = getattr(channel, "members", [])
+        human_members = [member for member in members if not getattr(member, "bot", False)]
+        stream_age = now_epoch - stream.created_at.timestamp()
+
+        if session.submissions_open and not human_members and stream_age >= AUTO_LEAVE_SOLO_SECONDS:
+            return "bot alone in voice channel"
+
+        playback_idle_seconds = now_monotonic - session.last_playback_event_at
+        if session.now_playing is None and not session.queue and playback_idle_seconds >= AUTO_LEAVE_IDLE_SECONDS:
+            return "queue empty and playback idle"
+
+        return None
+
+    async def _auto_leave_loop(self) -> None:
+        while True:
+            await asyncio.sleep(AUTO_LEAVE_POLL_SECONDS)
+            try:
+                await self._run_auto_leave_check()
+            except Exception as exc:  # pragma: no cover - defensive
+                logging.warning("Auto-leave check failed: %s", exc)
+
+    async def _run_auto_leave_check(self) -> None:
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        now_monotonic = asyncio.get_running_loop().time()
+        for voice_client in list(self.voice_clients):
+            guild = voice_client.guild
+            if guild is None:
+                continue
+
+            guild_streams = [
+                stream
+                for stream in self._streams.get(guild.id, [])
+                if stream.status == "active"
+            ]
+            if not guild_streams:
+                continue
+
+            stream = next(
+                (
+                    item
+                    for item in guild_streams
+                    if getattr(voice_client.channel, "id", None) == item.voice_channel_id
+                ),
+                None,
+            )
+            if stream is None:
+                continue
+
+            session = self.deps.session_manager.for_guild(guild.id)
+            reason = self._should_auto_leave(
+                session=session,
+                stream=stream,
+                voice_client=voice_client,
+                now_epoch=now_epoch,
+                now_monotonic=now_monotonic,
+            )
+            if reason is None:
+                continue
+
+            announce_channel_id = session.now_playing_channel_id
+            await self._teardown_voice_session(
+                guild=guild,
+                voice_channel_id=stream.voice_channel_id,
+                voice_client=voice_client,
+                reason=f"auto leave: {reason}",
+            )
+
+            if announce_channel_id is not None:
+                announce_channel = guild.get_channel(announce_channel_id)
+                can_send = announce_channel is not None and callable(getattr(announce_channel, "send", None))
+                if can_send:
+                    await announce_channel.send(
+                        "Auto-left the voice channel: queue idle timeout or bot was alone in VC."
+                    )
 
     async def _resolve_active_stream(
         self,
@@ -727,6 +882,8 @@ class JukeBot(commands.Bot):
                     status="active",
                 )
             )
+            session = self.deps.session_manager.for_guild(ctx.guild.id)
+            session.last_playback_event_at = asyncio.get_running_loop().time()
             await ctx.send(f"Joined {channel.name}! Stream is now active.")
 
         @self.command(name="leave")
@@ -751,31 +908,12 @@ class JukeBot(commands.Bot):
                 reason="manual leave command",
             )
 
-            session.queue.clear()
-            session.scrape_failures.clear()
-            session.now_playing_channel_id = None
-            session.stop_playback()
-
-            if ctx.voice_client is not None:
-                audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
-                await audio.stop(ctx.voice_client)
-                await ctx.voice_client.disconnect()
-
-            guild_streams = self._streams.get(ctx.guild.id, [])
-            for existing in guild_streams:
-                if existing.voice_channel_id == stream.voice_channel_id and existing.status == "active":
-                    existing.status = "ended"
-                    break
-            self._streams[ctx.guild.id] = [
-                existing
-                for existing in guild_streams
-                if existing.status == "active"
-            ]
-
-            await self.deps.queue_repo.clear(guild_id=ctx.guild.id)
-            await self.deps.submission_repo.clear_for_channel(
-                guild_id=ctx.guild.id,
-                channel_id=ctx.channel.id,
+            await self._teardown_voice_session(
+                guild=ctx.guild,
+                voice_channel_id=stream.voice_channel_id,
+                voice_client=ctx.voice_client,
+                reason="manual leave command",
+                channel_id_to_clear=ctx.channel.id,
             )
 
             await ctx.send("Left the voice channel. Cleared active stream state for this VC.")
