@@ -26,6 +26,17 @@ class Track:
 
 
 @dataclass
+class ScrapeFailureEntry:
+    timestamp_utc: str
+    url: str
+    error_summary: str
+    guild_id: int
+    channel_id: int
+    message_id: int
+    fallback_attempted: bool
+
+
+@dataclass
 class SessionState:
     submissions_open: bool = True
     per_user_limit: int | None = None
@@ -43,6 +54,7 @@ class SessionState:
     now_playing: Track | None = None
     now_playing_started_at: float | None = None
     now_playing_channel_id: int | None = None
+    scrape_failures: list[ScrapeFailureEntry] = field(default_factory=list)
 
     def reset(self) -> None:
         self.submissions_open = True
@@ -57,6 +69,7 @@ class SessionState:
         self.dj_enabled = False
         self.dj_remaining = None
         self.queue.clear()
+        self.scrape_failures.clear()
         self.now_playing_channel_id = None
         self.stop_playback()
 
