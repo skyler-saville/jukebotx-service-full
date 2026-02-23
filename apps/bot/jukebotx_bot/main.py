@@ -24,6 +24,7 @@ from jukebotx_bot.discord.session import (
     CooldownMode,
     ScrapeFailureEntry,
     SessionManager,
+    SessionState,
     Track,
 )
 from jukebotx_bot.discord.suno import extract_suno_urls
@@ -66,6 +67,15 @@ class BotDeps:
     queue_repo: PostgresQueueRepository
 
 
+@dataclass
+class StreamRecord:
+    guild_id: int
+    voice_channel_id: int
+    owner_user_id: int
+    created_at: datetime
+    status: str = "active"
+
+
 class JukeBot(commands.Bot):
     """
     Discord bot entrypoint for JukeBotx.
@@ -86,6 +96,7 @@ class JukeBot(commands.Bot):
         super().__init__(command_prefix=command_prefix, intents=intents)
         self.settings = settings
         self.deps = deps
+        self._streams: dict[int, list[StreamRecord]] = {}
 
         logging.basicConfig(level=logging.INFO)
 
@@ -114,6 +125,83 @@ class JukeBot(commands.Bot):
 
     def _get_audio(self, ctx: commands.Context) -> AudioControllerManager:
         return self.deps.audio_manager
+
+    def _upsert_stream(self, stream: StreamRecord) -> StreamRecord:
+        guild_streams = self._streams.setdefault(stream.guild_id, [])
+        for idx, existing in enumerate(guild_streams):
+            if existing.voice_channel_id == stream.voice_channel_id:
+                guild_streams[idx] = stream
+                return stream
+        guild_streams.append(stream)
+        return stream
+
+    async def _resolve_active_stream(
+        self,
+        ctx: commands.Context,
+        *,
+        require_author_in_stream_vc: bool = True,
+    ) -> StreamRecord | None:
+        if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+            await ctx.send("This command can only be used in a server.")
+            return None
+
+        guild_streams = [
+            stream
+            for stream in self._streams.get(ctx.guild.id, [])
+            if stream.status == "active"
+        ]
+        if not guild_streams:
+            await ctx.send("No active stream found. Use ;join first.")
+            return None
+
+        author_voice_channel_id = (
+            ctx.author.voice.channel.id
+            if ctx.author.voice is not None and ctx.author.voice.channel is not None
+            else None
+        )
+
+        active_stream = None
+        if author_voice_channel_id is not None:
+            active_stream = next(
+                (
+                    stream
+                    for stream in guild_streams
+                    if stream.voice_channel_id == author_voice_channel_id
+                ),
+                None,
+            )
+
+        if active_stream is None:
+            active_stream = next(
+                (stream for stream in guild_streams if stream.owner_user_id == ctx.author.id),
+                None,
+            )
+
+        if active_stream is None:
+            await ctx.send(
+                "Couldn't resolve an active stream for you. Join the stream VC or use ;join."
+            )
+            return None
+
+        if require_author_in_stream_vc and author_voice_channel_id != active_stream.voice_channel_id:
+            await ctx.send(
+                "This command only works from the stream's voice channel context. Join the active stream VC first."
+            )
+            return None
+
+        return active_stream
+
+    async def _resolve_stream_session(
+        self, ctx: commands.Context, *, require_author_in_stream_vc: bool = True
+    ) -> tuple[StreamRecord, SessionState] | None:
+        stream = await self._resolve_active_stream(
+            ctx,
+            require_author_in_stream_vc=require_author_in_stream_vc,
+        )
+        if stream is None:
+            return None
+        session = self._get_session(ctx).for_guild(stream.guild_id)
+        return stream, session
 
     def _build_opus_url(self, track_id: UUID | None) -> str | None:
         if track_id is None or self.settings.opus_api_base_url is None:
@@ -630,7 +718,16 @@ class JukeBot(commands.Bot):
                 await ctx.send(f"⚠️ Failed to join VC: {type(exc).__name__}: {exc}")
                 raise
 
-            await ctx.send(f"Joined {channel.name}!")
+            self._upsert_stream(
+                StreamRecord(
+                    guild_id=ctx.guild.id,
+                    voice_channel_id=channel.id,
+                    owner_user_id=ctx.author.id,
+                    created_at=datetime.now(timezone.utc),
+                    status="active",
+                )
+            )
+            await ctx.send(f"Joined {channel.name}! Stream is now active.")
 
         @self.command(name="leave")
         async def leave(ctx: commands.Context) -> None:
@@ -642,19 +739,38 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            stream, session = stream_session
             await self._send_scrape_failure_report(
                 guild_id=ctx.guild.id,
                 session=session,
                 moderator_channel=ctx.channel,
                 reason="manual leave command",
             )
-            session.reset()
+
+            session.queue.clear()
+            session.scrape_failures.clear()
+            session.now_playing_channel_id = None
+            session.stop_playback()
 
             if ctx.voice_client is not None:
                 audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
                 await audio.stop(ctx.voice_client)
                 await ctx.voice_client.disconnect()
+
+            guild_streams = self._streams.get(ctx.guild.id, [])
+            for existing in guild_streams:
+                if existing.voice_channel_id == stream.voice_channel_id and existing.status == "active":
+                    existing.status = "ended"
+                    break
+            self._streams[ctx.guild.id] = [
+                existing
+                for existing in guild_streams
+                if existing.status == "active"
+            ]
 
             await self.deps.queue_repo.clear(guild_id=ctx.guild.id)
             await self.deps.submission_repo.clear_for_channel(
@@ -662,7 +778,7 @@ class JukeBot(commands.Bot):
                 channel_id=ctx.channel.id,
             )
 
-            await ctx.send("Left the voice channel. Session reset.")
+            await ctx.send("Left the voice channel. Cleared active stream state for this VC.")
 
         @self.command(name="setlist")
         async def setlist(ctx: commands.Context) -> None:
@@ -782,7 +898,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             session.submissions_open = True
             session.reset_submission_counts()
             await ctx.send("Submissions are open.")
@@ -797,7 +917,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             session.submissions_open = False
             await ctx.send("Submissions are closed.")
 
@@ -845,7 +969,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("Use ;join first.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             session.now_playing_channel_id = ctx.channel.id
 
             if not session.submissions_open and not _is_mod(ctx.author):
@@ -1039,7 +1167,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("This command can only be used in a server.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             is_mod = isinstance(ctx.author, discord.Member) and _is_mod(ctx.author)
             full_autoplay_mode = (
                 session.autoplay_enabled is True and session.autoplay_remaining is None
@@ -1093,7 +1225,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("I'm not connected to a voice channel.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             started = await audio.skip(ctx.voice_client)
             if started is None:
@@ -1118,6 +1254,10 @@ class JukeBot(commands.Bot):
                 await ctx.send("I'm not connected to a voice channel.")
                 return
 
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
             if not ctx.voice_client.is_playing():
                 await ctx.send("Nothing is playing right now.")
                 return
@@ -1137,6 +1277,10 @@ class JukeBot(commands.Bot):
 
             if ctx.voice_client is None:
                 await ctx.send("I'm not connected to a voice channel.")
+                return
+
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
                 return
 
             if not ctx.voice_client.is_paused():
@@ -1160,7 +1304,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("I'm not connected to a voice channel.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             await audio.stop(ctx.voice_client)
             await ctx.send("Playback stopped.")
@@ -1175,7 +1323,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             session.queue.clear()
             await ctx.send("Queue cleared.")
 
@@ -1189,7 +1341,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             if index < 1 or index > len(session.queue):
                 await ctx.send("Invalid queue index.")
                 return
@@ -1213,7 +1369,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("Usage: `;limit <count>` or `;limit --session <count>`.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
             if len(args) == 2 and args[0] == "--session":
                 try:
                     session_limit = int(args[1])
@@ -1266,7 +1426,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
 
             if value is None:
                 session.now_playing_channel_id = ctx.channel.id
@@ -1303,7 +1467,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
 
             if value is None or value.lower() == "on":
                 session.cooldown_mode = CooldownMode.TIME
@@ -1352,7 +1520,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("You don't have permission to use this command.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
+            stream_session = await self._resolve_stream_session(ctx)
+            if stream_session is None:
+                return
+
+            _, session = stream_session
 
             if value is None:
                 session.now_playing_channel_id = ctx.channel.id
