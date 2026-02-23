@@ -57,6 +57,7 @@ This repo is set up so you can:
 
   * The “truth” of the system: entities, ports, use cases
   * No discord.py, no httpx, no infrastructure dependencies
+  * Canonical ingestion entry point: `jukebotx_core.use_cases.ingest_suno_links.IngestSunoLink`
 
 * **Infrastructure adapters** (`packages/infra`)
 
