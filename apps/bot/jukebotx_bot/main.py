@@ -20,7 +20,12 @@ import httpx
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
-from jukebotx_bot.discord.session import CooldownMode, SessionManager, Track
+from jukebotx_bot.discord.session import (
+    CooldownMode,
+    ScrapeFailureEntry,
+    SessionManager,
+    Track,
+)
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
 from jukebotx_core.use_cases.ingest_suno_links import (
@@ -137,6 +142,112 @@ class JukeBot(commands.Bot):
             session.per_user_counts.get(requester_id, 0) + 1
         )
         session.total_tracks_added += 1
+
+    def _record_scrape_failure(
+        self,
+        *,
+        session,
+        guild_id: int,
+        channel_id: int,
+        message_id: int,
+        url: str,
+        error_summary: str,
+        fallback_attempted: bool = False,
+    ) -> None:
+        session.scrape_failures.append(
+            ScrapeFailureEntry(
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                url=url,
+                error_summary=error_summary,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                message_id=message_id,
+                fallback_attempted=fallback_attempted,
+            )
+        )
+
+    async def _send_scrape_failure_report(
+        self,
+        *,
+        guild_id: int,
+        session,
+        moderator_channel: discord.abc.Messageable | None = None,
+        reason: str,
+    ) -> None:
+        if not session.scrape_failures:
+            return
+
+        master_user_id = self.settings.master_user_id
+        if master_user_id is None:
+            logging.info(
+                "Skipping scrape failure report for guild_id=%s: MASTER_USER_ID is not configured.",
+                guild_id,
+            )
+            return
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tmp_file:
+            tmp_file.write(
+                f"JukeBotx scrape failure report\nGuild ID: {guild_id}\nReason: {reason}\nGenerated UTC: {datetime.now(timezone.utc).isoformat()}\n\n"
+            )
+            for idx, failure in enumerate(session.scrape_failures, start=1):
+                tmp_file.write(
+                    f"[{idx}] timestamp_utc={failure.timestamp_utc}\n"
+                    f"    url={failure.url}\n"
+                    f"    error_summary={failure.error_summary}\n"
+                    f"    guild_id={failure.guild_id}\n"
+                    f"    channel_id={failure.channel_id}\n"
+                    f"    message_id={failure.message_id}\n"
+                    f"    fallback_attempted={failure.fallback_attempted}\n\n"
+                )
+            tmp_path = tmp_file.name
+
+        try:
+            user = await self.fetch_user(master_user_id)
+            await user.send(
+                content=(
+                    f"Scrape failure report for guild {guild_id}. Trigger: {reason}."
+                ),
+                file=discord.File(tmp_path, filename=f"scrape_failures_{guild_id}.txt"),
+            )
+            session.scrape_failures.clear()
+        except discord.NotFound:
+            logging.warning(
+                "MASTER_USER_ID user not found for scrape failure report (master_user_id=%s guild_id=%s)",
+                master_user_id,
+                guild_id,
+            )
+            if moderator_channel is not None:
+                try:
+                    await moderator_channel.send(
+                        "⚠️ Could not deliver scrape failure report (master user not found)."
+                    )
+                except discord.HTTPException:
+                    pass
+        except discord.Forbidden:
+            logging.warning(
+                "DM forbidden while sending scrape failure report to master user (master_user_id=%s guild_id=%s)",
+                master_user_id,
+                guild_id,
+            )
+            if moderator_channel is not None:
+                try:
+                    await moderator_channel.send(
+                        "⚠️ Could not DM scrape failure report to MASTER_USER_ID."
+                    )
+                except discord.HTTPException:
+                    pass
+        except discord.HTTPException as exc:
+            logging.warning(
+                "HTTP error while sending scrape failure report (master_user_id=%s guild_id=%s): %s",
+                master_user_id,
+                guild_id,
+                exc,
+            )
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                logging.warning("Failed to delete temp scrape report file: %s", tmp_path)
 
     # -----------------------------
     # Events
@@ -322,6 +433,14 @@ class JukeBot(commands.Bot):
                         message.channel.id,
                         message.id,
                     )
+                    self._record_scrape_failure(
+                        session=session,
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        message_id=message.id,
+                        url=url,
+                        error_summary=str(exc) or "scrape error",
+                    )
                     continue
 
                 if not result.mp3_url:
@@ -336,6 +455,14 @@ class JukeBot(commands.Bot):
                         message.guild.id,
                         message.channel.id,
                         message.id,
+                    )
+                    self._record_scrape_failure(
+                        session=session,
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        message_id=message.id,
+                        url=url,
+                        error_summary="missing mp3_url",
                     )
                     continue
 
@@ -390,6 +517,12 @@ class JukeBot(commands.Bot):
                 await _send_submission_feedback(
                     message,
                     "Session closed at limit: no more tracks can be added. Additional songs were not queued.",
+                )
+                await self._send_scrape_failure_report(
+                    guild_id=message.guild.id,
+                    session=session,
+                    moderator_channel=message.channel,
+                    reason="session limit reached from auto-ingest",
                 )
 
             if skipped_playlist:
@@ -510,6 +643,12 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            await self._send_scrape_failure_report(
+                guild_id=ctx.guild.id,
+                session=session,
+                moderator_channel=ctx.channel,
+                reason="manual leave command",
+            )
             session.reset()
 
             if ctx.voice_client is not None:
@@ -793,6 +932,12 @@ class JukeBot(commands.Bot):
                 )
                 if self._session_limit_reached(session):
                     session.submissions_open = False
+                    await self._send_scrape_failure_report(
+                        guild_id=ctx.guild.id,
+                        session=session,
+                        moderator_channel=ctx.channel,
+                        reason="session closed after setting session limit",
+                    )
                     break
 
                 session.queue.append(track)
@@ -803,6 +948,12 @@ class JukeBot(commands.Bot):
 
             if accepted_count == 0:
                 session.submissions_open = False
+                await self._send_scrape_failure_report(
+                    guild_id=ctx.guild.id,
+                    session=session,
+                    moderator_channel=ctx.channel,
+                    reason="session limit reached while queueing playlist",
+                )
                 await ctx.send("Session closed at limit: no more tracks can be added.")
                 return
 
@@ -1077,6 +1228,12 @@ class JukeBot(commands.Bot):
                 session.session_total_limit = session_limit
                 if self._session_limit_reached(session):
                     session.submissions_open = False
+                    await self._send_scrape_failure_report(
+                        guild_id=ctx.guild.id,
+                        session=session,
+                        moderator_channel=ctx.channel,
+                        reason="session closed after setting session limit",
+                    )
                 await ctx.send(
                     f"Session total track cap set to {session_limit} (counts all tracks added this session)."
                 )
