@@ -3,9 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from jukebotx_core.domain import (
+    QUEUE_STATUS_PLAYED,
+    QUEUE_STATUS_QUEUED,
+    ensure_queue_transition,
+)
 from jukebotx_core.ports.repositories import QueueItem, QueueItemCreate, QueueRepository
 from jukebotx_infra.db.models import QueueItemModel
 
@@ -48,7 +53,7 @@ class PostgresQueueRepository(QueueRepository):
                 guild_id=data.guild_id,
                 track_id=data.track_id,
                 requested_by=data.requested_by,
-                status="queued",
+                status=QUEUE_STATUS_QUEUED,
                 position=next_pos,
                 created_at=now,
                 updated_at=now,
@@ -63,7 +68,7 @@ class PostgresQueueRepository(QueueRepository):
         async with self._session_factory() as session:
             result = await session.scalar(
                 select(QueueItemModel)
-                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.status == "queued")
+                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.status == QUEUE_STATUS_QUEUED)
                 .order_by(QueueItemModel.position.asc())
                 .limit(1)
             )
@@ -72,21 +77,27 @@ class PostgresQueueRepository(QueueRepository):
     async def mark_played(self, *, guild_id: int, queue_item_id: UUID) -> None:
         """Mark a queue item as played."""
         async with self._session_factory() as session:
-            result = await session.execute(
-                update(QueueItemModel)
-                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.id == queue_item_id)
-                .values(status="played", updated_at=_now())
+            item = await session.scalar(
+                select(QueueItemModel).where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.id == queue_item_id,
+                )
             )
-            await session.commit()
-            if result.rowcount == 0:
+            if item is None:
                 raise KeyError(f"Queue item not found: {queue_item_id}")
+
+            ensure_queue_transition(current_status=item.status, next_status=QUEUE_STATUS_PLAYED)
+
+            item.status = QUEUE_STATUS_PLAYED
+            item.updated_at = _now()
+            await session.commit()
 
     async def preview(self, *, guild_id: int, limit: int) -> list[QueueItem]:
         """Return a preview list of queued items for a guild."""
         async with self._session_factory() as session:
             rows = await session.scalars(
                 select(QueueItemModel)
-                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.status == "queued")
+                .where(QueueItemModel.guild_id == guild_id, QueueItemModel.status == QUEUE_STATUS_QUEUED)
                 .order_by(QueueItemModel.position.asc())
                 .limit(limit)
             )

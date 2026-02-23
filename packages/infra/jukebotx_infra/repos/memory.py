@@ -5,6 +5,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+from jukebotx_core.domain import (
+    QUEUE_STATUS_PLAYED,
+    QUEUE_STATUS_QUEUED,
+    ensure_queue_transition,
+)
 from jukebotx_core.ports.repositories import (
     QueueItem,
     QueueItemCreate,
@@ -143,7 +148,7 @@ class InMemoryQueueRepository(QueueRepository):
             guild_id=data.guild_id,
             track_id=data.track_id,
             requested_by=data.requested_by,
-            status="queued",
+            status=QUEUE_STATUS_QUEUED,
             position=position,
             created_at=now,
             updated_at=now,
@@ -154,7 +159,7 @@ class InMemoryQueueRepository(QueueRepository):
     async def get_next_unplayed(self, *, guild_id: int) -> QueueItem | None:
         items = self._by_guild.get(guild_id, [])
         for qi in items:
-            if qi.status == "queued":
+            if qi.status == QUEUE_STATUS_QUEUED:
                 return qi
         return None
 
@@ -162,13 +167,14 @@ class InMemoryQueueRepository(QueueRepository):
         items = self._by_guild.get(guild_id, [])
         for idx, qi in enumerate(items):
             if qi.id == queue_item_id:
-                items[idx] = replace(qi, status="played", updated_at=_now())
+                ensure_queue_transition(current_status=qi.status, next_status=QUEUE_STATUS_PLAYED)
+                items[idx] = replace(qi, status=QUEUE_STATUS_PLAYED, updated_at=_now())
                 return
         raise KeyError(f"Queue item not found: {queue_item_id}")
 
     async def preview(self, *, guild_id: int, limit: int) -> list[QueueItem]:
         items = self._by_guild.get(guild_id, [])
-        queued = [qi for qi in items if qi.status == "queued"]
+        queued = [qi for qi in items if qi.status == QUEUE_STATUS_QUEUED]
         return queued[:limit]
 
     async def clear(self, *, guild_id: int) -> None:
