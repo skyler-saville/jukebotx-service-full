@@ -47,6 +47,7 @@ from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
 AUTO_LEAVE_POLL_SECONDS = float(os.getenv("AUTO_LEAVE_POLL_SECONDS", "30"))
 AUTO_LEAVE_IDLE_SECONDS = float(os.getenv("AUTO_LEAVE_IDLE_SECONDS", "600"))
 AUTO_LEAVE_SOLO_SECONDS = float(os.getenv("AUTO_LEAVE_SOLO_SECONDS", "120"))
+SUMMARY_WINDOW_SECONDS = float(os.getenv("LOG_SUMMARY_WINDOW_SECONDS", "300"))
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,53 @@ class JukeBot(commands.Bot):
             **context,
         ).info("Canonical event emitted: %s", event_name)
 
+    def _mark_command_usage(self, guild_id: int | None) -> None:
+        if guild_id is None:
+            return
+        session = self.deps.session_manager.for_guild(guild_id)
+        session.command_usage_window += 1
+
+    def _mark_ingest_attempt(self, guild_id: int) -> None:
+        session = self.deps.session_manager.for_guild(guild_id)
+        session.ingest_attempted_window += 1
+
+    def _mark_ingest_success(self, guild_id: int) -> None:
+        session = self.deps.session_manager.for_guild(guild_id)
+        session.ingest_succeeded_window += 1
+
+    def _mark_ingest_failure(self, guild_id: int) -> None:
+        session = self.deps.session_manager.for_guild(guild_id)
+        session.ingest_failed_window += 1
+
+    def _mark_auto_leave_reason(self, guild_id: int, reason: str) -> None:
+        session = self.deps.session_manager.for_guild(guild_id)
+        session.auto_leave_reasons_window[reason] = (
+            session.auto_leave_reasons_window.get(reason, 0) + 1
+        )
+
+    def _emit_periodic_summaries(self) -> None:
+        now_monotonic = asyncio.get_running_loop().time()
+        for guild_id, session in self.deps.session_manager.sessions().items():
+            window_age = now_monotonic - session.summary_window_started_at
+            if window_age < SUMMARY_WINDOW_SECONDS:
+                continue
+
+            get_event_logger(
+                logger,
+                event_name="guild_activity_summary",
+                guild_id=guild_id,
+                window_seconds=int(window_age),
+            ).info(
+                "Summary window: ingest attempted=%s succeeded=%s failed=%s command_usage=%s queue_growth=%s auto_leave_reasons=%s",
+                session.ingest_attempted_window,
+                session.ingest_succeeded_window,
+                session.ingest_failed_window,
+                session.command_usage_window,
+                len(session.queue) - session.queue_size_window_start,
+                session.auto_leave_reasons_window,
+            )
+            session.begin_summary_window()
+
     def _upsert_stream(self, stream: StreamRecord) -> StreamRecord:
         guild_streams = self._streams.setdefault(stream.guild_id, [])
         for idx, existing in enumerate(guild_streams):
@@ -303,6 +351,7 @@ class JukeBot(commands.Bot):
     async def _run_auto_leave_check(self) -> None:
         now_epoch = datetime.now(timezone.utc).timestamp()
         now_monotonic = asyncio.get_running_loop().time()
+        self._emit_periodic_summaries()
         for voice_client in list(self.voice_clients):
             guild = voice_client.guild
             if guild is None:
@@ -346,6 +395,7 @@ class JukeBot(commands.Bot):
                 trigger="auto_leave_loop",
                 reason=reason,
             )
+            self._mark_auto_leave_reason(guild.id, reason)
 
             announce_channel_id = session.now_playing_channel_id
             await self._teardown_voice_session(
@@ -708,6 +758,8 @@ class JukeBot(commands.Bot):
             ctx: commands.Context, error: commands.CommandError
         ) -> None:
             if isinstance(error, commands.CheckFailure):
+                # Logging policy: always log permission failures.
+                get_event_logger(logger, event_name="command_permission_failure", guild_id=ctx.guild.id if ctx.guild is not None else None, channel_id=ctx.channel.id if ctx.channel is not None else None, user_id=ctx.author.id if ctx.author is not None else None).warning("Command permission failure: %s", getattr(ctx, "invoked_with", "unknown"))
                 await ctx.send("🚫 You don’t have permission to use that command.")
                 return
 
@@ -715,6 +767,7 @@ class JukeBot(commands.Bot):
                 return
 
             # Show the actual error in chat during dev; remove later if you want.
+            get_event_logger(logger, event_name="command_exception", guild_id=ctx.guild.id if ctx.guild is not None else None, channel_id=ctx.channel.id if ctx.channel is not None else None, user_id=ctx.author.id if ctx.author is not None else None, error_type=type(error).__name__).exception("Unhandled command error")
             await ctx.send(f"⚠️ Command failed: {type(error).__name__}: {error}")
             raise error
 
@@ -765,6 +818,7 @@ class JukeBot(commands.Bot):
 
             ctx = await self.get_context(message)
             if ctx.command is not None:
+                self._mark_command_usage(message.guild.id if message.guild is not None else None)
                 await self.invoke(ctx)
                 return
 
@@ -855,6 +909,8 @@ class JukeBot(commands.Bot):
                     failure_count += 1
                     break
                 try:
+                    # Logging policy: sample normal ingest usage with per-event debug logs and periodic summaries.
+                    self._mark_ingest_attempt(message.guild.id)
                     self._log_canonical_event(
                         event_name="ingest_attempt",
                         guild_id=message.guild.id,
@@ -879,6 +935,7 @@ class JukeBot(commands.Bot):
                         "reason": str(exc) or "scrape error",
                     }
                     failure_count += 1
+                    self._mark_ingest_failure(message.guild.id)
                     get_event_logger(
                         logger,
                         event_name="suno_ingest_scrape_failure",
@@ -926,6 +983,7 @@ class JukeBot(commands.Bot):
                         "reason": "missing mp3_url",
                     }
                     failure_count += 1
+                    self._mark_ingest_failure(message.guild.id)
                     get_event_logger(
                         logger,
                         event_name="suno_ingest_missing_required_fields",
@@ -983,6 +1041,7 @@ class JukeBot(commands.Bot):
                 asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
                 success_count += 1
+                self._mark_ingest_success(message.guild.id)
                 self._mark_scrape_success(session=session)
                 url_outcomes[url] = {"status": "success", "reason": "queued"}
                 self._log_canonical_event(
@@ -1133,11 +1192,15 @@ class JukeBot(commands.Bot):
             try:
                 await channel.connect()
             except discord.Forbidden:
+                # Logging policy: always log permission failures and failed VC join/leave attempts.
+                get_event_logger(logger, event_name="voice_join_forbidden", guild_id=ctx.guild.id, channel_id=channel.id, user_id=ctx.author.id).warning("Voice join forbidden")
                 await ctx.send(
                     "🚫 I don't have permission to join that voice channel (View/Connect)."
                 )
                 return
             except Exception as exc:
+                # Logging policy: always log exceptions and failed VC join attempts.
+                get_event_logger(logger, event_name="voice_join_failed", guild_id=ctx.guild.id, channel_id=channel.id, user_id=ctx.author.id, error_type=type(exc).__name__).exception("Failed to join voice channel")
                 await ctx.send(f"⚠️ Failed to join VC: {type(exc).__name__}: {exc}")
                 raise
 
@@ -1153,6 +1216,7 @@ class JukeBot(commands.Bot):
             session = self.deps.session_manager.for_guild(ctx.guild.id)
             session.last_playback_event_at = asyncio.get_running_loop().time()
             await ctx.send(f"Joined {channel.name}! Stream is now active.")
+            # Logging policy: successful join/leave are sampled via per-event logs + periodic summaries.
             self._log_canonical_event(
                 event_name="session_join",
                 guild_id=ctx.guild.id,
@@ -1187,6 +1251,7 @@ class JukeBot(commands.Bot):
             )
 
             await ctx.send("Left the voice channel. Cleared active stream state for this VC.")
+            # Logging policy: successful join/leave are sampled via per-event logs + periodic summaries.
             self._log_canonical_event(
                 event_name="session_leave",
                 guild_id=ctx.guild.id,
@@ -1412,6 +1477,8 @@ class JukeBot(commands.Bot):
             try:
                 playlist_data = await self.deps.playlist_client.fetch_playlist(url)
             except SunoScrapeError as exc:
+                self._mark_ingest_failure(ctx.guild.id)
+                get_event_logger(logger, event_name="playlist_fetch_failed", guild_id=ctx.guild.id, channel_id=ctx.channel.id, user_id=ctx.author.id, error_type=type(exc).__name__).warning("Failed to fetch playlist")
                 await ctx.send(f"Failed to fetch playlist: {exc}")
                 return
 
@@ -1447,6 +1514,8 @@ class JukeBot(commands.Bot):
                 ingest_url = item.suno_track_url or item.mp3_url
                 if ingest_url is not None:
                     try:
+                        # Logging policy: sample normal ingest usage with per-event debug logs and periodic summaries.
+                        self._mark_ingest_attempt(ctx.guild.id)
                         self._log_canonical_event(
                             event_name="ingest_attempt",
                             guild_id=ctx.guild.id,
@@ -1466,6 +1535,7 @@ class JukeBot(commands.Bot):
                             )
                         )
                     except SunoScrapeError as exc:
+                        self._mark_ingest_failure(ctx.guild.id)
                         get_event_logger(
                             logger,
                             event_name="playlist_ingest_failed",
@@ -1528,6 +1598,7 @@ class JukeBot(commands.Bot):
                 session.queue.append(track)
                 self._record_track_addition(session, user_id)
                 accepted_count += 1
+                self._mark_ingest_success(ctx.guild.id)
                 if track_id is not None:
                     asyncio.create_task(self._prefetch_opus(track_id))
 
@@ -1666,6 +1737,8 @@ class JukeBot(commands.Bot):
 
             started = await audio.play_next(ctx.voice_client)
             if started is None:
+                # Logging policy: always log playback startup failures.
+                get_event_logger(logger, event_name="playback_start_failed", guild_id=ctx.guild.id, channel_id=ctx.channel.id, user_id=ctx.author.id).warning("Playback did not start from ;p")
                 if is_mod:
                     await ctx.send(
                         "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
@@ -1677,6 +1750,7 @@ class JukeBot(commands.Bot):
             session.now_playing_channel_id = ctx.channel.id
             embed = build_now_playing_embed(started)
             await ctx.send(embed=embed)
+            # Logging policy: emit per-event debug logs for normal command usage; rely on periodic summaries for aggregates.
             self._log_canonical_event(
                 event_name="playback_started",
                 guild_id=ctx.guild.id,
