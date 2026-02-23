@@ -1,4 +1,8 @@
-# packages/core/jukebotx_core/use_cases/ingest_suno_links.py
+"""Canonical track ingestion use case for Suno links.
+
+`IngestSunoLink` is the supported public ingestion entry point in core.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
