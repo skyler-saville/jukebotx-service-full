@@ -620,15 +620,29 @@ class JukeBot(commands.Bot):
         deduped_failures = self._dedupe_failures(pending_failures)
 
         master_user_id = self.settings.master_user_id
-        if master_user_id is None:
+        if master_user_id is None or master_user_id <= 0:
             get_event_logger(
                 logger,
                 event_name="scrape_report_skipped",
                 guild_id=guild_id,
             ).info(
-                "Skipping scrape failure report for guild_id=%s: MASTER_USER_ID is not configured.",
+                "Skipping scrape failure report for guild_id=%s: MASTER_USER_ID is not configured or invalid.",
                 guild_id,
             )
+            if (
+                moderator_channel is not None
+                and (
+                    alerts.last_channel_warning_at is None
+                    or (now_monotonic - alerts.last_channel_warning_at) >= min_interval
+                )
+            ):
+                try:
+                    await moderator_channel.send(
+                        "⚠️ Could not deliver scrape failure report because MASTER_USER_ID is not configured."
+                    )
+                    alerts.last_channel_warning_at = now_monotonic
+                except discord.HTTPException:
+                    pass
             return
 
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tmp_file:
