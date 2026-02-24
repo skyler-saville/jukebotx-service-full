@@ -192,6 +192,13 @@ These names may evolve, but the usual suspects are:
 * `OPUS_STORAGE_PUBLIC_BASE_URL` — public base URL for Opus objects (optional)
 * `OPUS_STORAGE_SIGNED_URL_TTL_SECONDS` — TTL for signed URLs
 * `OPUS_STORAGE_TTL_SECONDS` — TTL for objects before refresh
+* `MEDIA_STORAGE_PROVIDER` — set to `s3` to enable MP4→GIF storage for track previews
+* `MEDIA_STORAGE_BUCKET` — bucket for generated GIF previews
+* `MEDIA_STORAGE_PREFIX` — object prefix for generated GIFs (defaults to `media-gifs`)
+* `MEDIA_STORAGE_ENDPOINT_URL` — S3 endpoint URL for MinIO/S3
+* `MEDIA_STORAGE_ACCESS_KEY_ID`, `MEDIA_STORAGE_SECRET_ACCESS_KEY` — S3 credentials for GIF uploads
+* `MEDIA_STORAGE_PUBLIC_BASE_URL` — public base URL used in stored GIF links
+* `MEDIA_FFMPEG_PATH` — ffmpeg binary used for MP4→GIF conversion (defaults to `ffmpeg`)
 * `FFMPEG_PROBESIZE` — optional ffmpeg `-probesize` value used before input for stream probing
 * `FFMPEG_ANALYZEDURATION` — optional ffmpeg `-analyzeduration` value used before input analysis
 * `FFMPEG_BEFORE_OPTIONS_EXTRA` — optional extra flags appended to ffmpeg `before_options`

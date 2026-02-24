@@ -39,6 +39,7 @@ from jukebotx_infra.db import async_session_factory, init_db
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
+from jukebotx_infra.media import MinioVideoGifStorage, VideoGifStorageConfig
 from jukebotx_infra.suno.client import SunoScrapeError
 from jukebotx_infra.suno.fallback_client import FallbackSunoClient
 from jukebotx_infra.suno.playlist_client import HttpxSunoPlaylistClient
@@ -2453,6 +2454,19 @@ def build_bot() -> JukeBot:
             track_repo=PostgresTrackRepository(async_session_factory),
             submission_repo=PostgresSubmissionRepository(async_session_factory),
             queue_repo=PostgresQueueRepository(async_session_factory),
+            media_transformer=MinioVideoGifStorage(
+                VideoGifStorageConfig(
+                    provider=settings.media_storage_provider,
+                    bucket=settings.media_storage_bucket,
+                    prefix=settings.media_storage_prefix,
+                    region=settings.media_storage_region,
+                    endpoint_url=settings.media_storage_endpoint_url,
+                    access_key_id=settings.media_storage_access_key_id,
+                    secret_access_key=settings.media_storage_secret_access_key,
+                    public_base_url=settings.media_storage_public_base_url,
+                    ffmpeg_path=settings.media_ffmpeg_path,
+                )
+            ),
         ),
         playlist_client=HttpxSunoPlaylistClient(),
         submission_repo=PostgresSubmissionRepository(async_session_factory),
