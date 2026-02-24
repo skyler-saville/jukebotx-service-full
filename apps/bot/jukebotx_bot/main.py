@@ -487,6 +487,124 @@ class JukeBot(commands.Bot):
         base_url = self.settings.opus_api_base_url.rstrip("/")
         return f"{base_url}/tracks/{track_id}/opus"
 
+    def _truncate_embed_text(self, text: str, *, max_len: int) -> str:
+        if len(text) <= max_len:
+            return text
+        if max_len <= 1:
+            return text[:max_len]
+        return f"{text[: max_len - 1].rstrip()}…"
+
+    def _build_queue_embed(
+        self,
+        *,
+        session: SessionState,
+        page: int,
+        depth: int,
+        queue_slice: list[Track],
+        start_index: int,
+        total_tracks: int,
+    ) -> discord.Embed:
+        total_pages = max(1, math.ceil(total_tracks / depth)) if total_tracks > 0 else 1
+        page_display = min(page, total_pages)
+
+        session_state = (
+            f"{'Open' if session.submissions_open else 'Closed'}"
+            f" • {'Empty' if total_tracks == 0 else f'{total_tracks} queued'}"
+        )
+
+        if total_tracks == 0:
+            track_lines = ["Queue is empty."]
+        elif not queue_slice:
+            track_lines = ["No tracks on this page."]
+        else:
+            track_lines = []
+            for idx, track in enumerate(queue_slice, start=start_index):
+                title = self._truncate_embed_text(track.title or "Untitled", max_len=70)
+                artist = self._truncate_embed_text(
+                    track.artist_display or "Unknown Artist", max_len=30
+                )
+                requester = self._truncate_embed_text(track.requester_name, max_len=24)
+                line = f"`{idx}.` {title} — {artist} • {requester}"
+                track_lines.append(self._truncate_embed_text(line, max_len=120))
+
+        embed = discord.Embed(
+            title="Queue",
+            color=discord.Color.green()
+            if session.submissions_open
+            else discord.Color.dark_grey(),
+        )
+        embed.add_field(name="Session", value=session_state, inline=False)
+        embed.add_field(
+            name="Page",
+            value=f"{page_display}/{total_pages} • {depth} per page",
+            inline=False,
+        )
+        embed.add_field(
+            name="Tracks",
+            value=self._truncate_embed_text("\n".join(track_lines), max_len=1000),
+            inline=False,
+        )
+        return embed
+
+    def _build_modes_embed(self, *, session: SessionState) -> discord.Embed:
+        autoplay_value = (
+            "Enabled (until queue is empty)"
+            if session.autoplay_enabled and session.autoplay_remaining is None
+            else (
+                f"Enabled ({session.autoplay_remaining} track(s) remaining)"
+                if session.autoplay_enabled
+                else "Disabled"
+            )
+        )
+        dj_value = (
+            "Enabled (until queue is empty)"
+            if session.dj_enabled and session.dj_remaining is None
+            else (
+                f"Enabled ({session.dj_remaining} track(s) remaining)"
+                if session.dj_enabled
+                else "Disabled"
+            )
+        )
+
+        if session.cooldown_mode == CooldownMode.TIME:
+            cooldown_value = f"🟢 Time ({session.submission_cooldown_seconds // 60} minute(s))"
+        elif session.cooldown_mode == CooldownMode.QUEUE:
+            cooldown_value = "🟢 Queue"
+        else:
+            cooldown_value = "⚪ Off"
+
+        per_user_limit_value = (
+            f"🔴 Capped at {session.per_user_limit}"
+            if session.per_user_limit is not None
+            else "🟢 Open"
+        )
+        session_limit_value = (
+            f"🔴 Capped at {session.session_total_limit}"
+            if session.session_total_limit is not None
+            else "🟢 Open"
+        )
+
+        embed = discord.Embed(
+            title="Mode Settings",
+            color=discord.Color.green()
+            if session.submissions_open
+            else discord.Color.red(),
+        )
+        embed.add_field(
+            name="Autoplay",
+            value=(f"🟢 {autoplay_value}" if session.autoplay_enabled else "⚪ Disabled"),
+            inline=False,
+        )
+        embed.add_field(
+            name="DJ",
+            value=(f"🟢 {dj_value}" if session.dj_enabled else "⚪ Disabled"),
+            inline=False,
+        )
+        embed.add_field(name="Cooldown", value=cooldown_value, inline=False)
+        embed.add_field(name="Per-user limit", value=per_user_limit_value, inline=False)
+        embed.add_field(name="Session limit", value=session_limit_value, inline=False)
+        return embed
+
     async def _prefetch_opus(self, track_id: UUID) -> None:
         if self.settings.opus_api_base_url is None:
             return
@@ -1688,44 +1806,25 @@ class JukeBot(commands.Bot):
                     await ctx.send("Usage: `;q`, `;q <depth>`, or `;q page <number>`")
                     return
 
-            lines: list[str] = []
-            if session.submissions_open:
-                lines.append("Session is open.")
-                lines.append("Add a Suno URL to queue a song.")
+            total_tracks = len(session.queue)
+            if not args:
+                queue_slice = session.queue[:default_depth]
+                start_index = 1
+                depth = default_depth
             else:
-                lines.append("Session is closed.")
+                start_offset = (page - 1) * depth
+                queue_slice = session.queue[start_offset : start_offset + depth]
+                start_index = start_offset + 1
 
-            if session.queue:
-                total = len(session.queue)
-                if not args:
-                    if total == 1:
-                        lines.append("Last song")
-                    elif total > 5:
-                        lines.append(f"Next 5 out of {total}")
-                    else:
-                        lines.append(f"Next {total}")
-                    queue_slice = session.queue[:default_depth]
-                    start_index = 1
-                else:
-                    start_offset = (page - 1) * depth
-                    queue_slice = session.queue[start_offset : start_offset + depth]
-                    start_index = start_offset + 1
-                    total_pages = max(1, math.ceil(total / depth))
-                    lines.append(
-                        f"Queue page {min(page, total_pages)}/{total_pages} | showing up to {depth} | total tracks: {total}"
-                    )
-                    if not queue_slice:
-                        lines.append("No tracks on this page.")
-
-                for idx, track in enumerate(queue_slice, start=start_index):
-                    artist = track.artist_display or "Unknown Artist"
-                    lines.append(
-                        f"{idx}. {track.title} by {artist} (Requested by {track.requester_name})"
-                    )
-            else:
-                lines.append("Queue is empty.")
-
-            await ctx.send("\n".join(lines))
+            embed = self._build_queue_embed(
+                session=session,
+                page=page,
+                depth=depth,
+                queue_slice=queue_slice,
+                start_index=start_index,
+                total_tracks=total_tracks,
+            )
+            await ctx.send(embed=embed)
 
         @self.command(name="np")
         async def now_playing(ctx: commands.Context) -> None:
@@ -2247,50 +2346,8 @@ class JukeBot(commands.Bot):
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
 
-            autoplay_value = (
-                "on (until queue is empty)"
-                if session.autoplay_enabled and session.autoplay_remaining is None
-                else (
-                    f"on ({session.autoplay_remaining} track(s) remaining)"
-                    if session.autoplay_enabled
-                    else "off"
-                )
-            )
-            dj_value = (
-                "on (until queue is empty)"
-                if session.dj_enabled and session.dj_remaining is None
-                else (
-                    f"on ({session.dj_remaining} track(s) remaining)"
-                    if session.dj_enabled
-                    else "off"
-                )
-            )
-            if session.cooldown_mode == CooldownMode.TIME:
-                cooldown_value = f"time ({session.submission_cooldown_seconds // 60} minute(s))"
-            elif session.cooldown_mode == CooldownMode.QUEUE:
-                cooldown_value = "queue"
-            else:
-                cooldown_value = "off"
-
-            per_user_limit_value = (
-                str(session.per_user_limit)
-                if session.per_user_limit is not None
-                else "unset"
-            )
-            session_limit_value = (
-                str(session.session_total_limit)
-                if session.session_total_limit is not None
-                else "unset"
-            )
-
-            await ctx.send(
-                "Current mode settings:\n"
-                f"• Autoplay: {autoplay_value}\n"
-                f"• DJ mode: {dj_value}\n"
-                f"• Cooldown mode: {cooldown_value}\n"
-                f"• Per-user limit: {per_user_limit_value}\n"
-                f"• Session limit: {session_limit_value}"
-            )
+            embed = self._build_modes_embed(session=session)
+            await ctx.send(embed=embed)
 
         @self.command(name="dj")
         async def dj(ctx: commands.Context, value: Optional[str] = None) -> None:
