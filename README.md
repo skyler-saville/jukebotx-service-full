@@ -46,6 +46,8 @@ This repo is set up so you can:
   * Permissions checks
   * FFmpeg-backed audio playback in voice channels
   * Auto-ingests Suno links into Postgres when the bot is active in a guild
+  * Generates GIF previews from Suno MP4 clips when image metadata is missing
+  * Stores generated GIF previews in MinIO/S3 and persists the GIF URL on the related track record
   * Uses core use-cases to avoid bot-specific business logic
 
 * **API** (`apps/api`)
@@ -336,13 +338,11 @@ The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/
 
 * `;web` / `;sessionurl` — post the session UI link (requires `WEB_BASE_URL`)
 
-### Web UI
+### UX/UI additions
 
-* `;web` / `;sessionurl` — post the session UI link (requires `WEB_BASE_URL`)
-
-### Web UI
-
-* `;web` / `;sessionurl` — post the session UI link (requires `WEB_BASE_URL`)
+* `;q` now shows a richer queue preview with now-playing context and upcoming items.
+* `;np` now favors image/GIF media so previews render in Discord embeds even when Suno only returns MP4.
+* Preview media falls back in this order: `image_url` -> generated GIF from `video_url` -> raw `video_url`.
 
 ### Announcements
 
@@ -388,6 +388,20 @@ This helps confirm what the server returned:
 * whether Next.js streaming payload is present (`self.__next_f.push`)
 * whether OpenGraph tags exist
 * whether lyric markers exist in escaped payload strings
+
+### Smoke: MP4 -> GIF -> MinIO + DB tracking
+
+Use this test to verify the fallback path when Suno metadata only includes MP4 media:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q tests/test_ingest_media_selection.py tests/test_video_gif_storage.py
+```
+
+What this verifies:
+
+* MP4 URLs are sent through the media transformer when no image is present.
+* GIF output URLs (for example, MinIO public URLs) are written back as `image_url` during ingest.
+* The generated GIF is uploaded to MinIO/S3 with `ContentType=image/gif` and deterministic object keys.
 
 ---
 
