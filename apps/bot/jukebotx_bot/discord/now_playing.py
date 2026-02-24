@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlsplit, urlunsplit
+
 import discord
 
 from jukebotx_bot.discord.session import Track
@@ -17,6 +19,22 @@ def _format_duration(duration_seconds: float | None) -> str | None:
     return f"{minutes}:{seconds:02d}"
 
 
+def _embed_image_url(media_url: str | None) -> str | None:
+    if not media_url:
+        return None
+
+    parsed = urlsplit(media_url)
+    path_lower = parsed.path.lower()
+    if path_lower.endswith((".jpg", ".png", ".webp", ".gif")):
+        return media_url
+
+    if path_lower.endswith(".mp4"):
+        gif_path = parsed.path[:-4] + ".gif"
+        return urlunsplit(parsed._replace(path=gif_path))
+
+    return None
+
+
 def build_now_playing_embed(
     track: Track,
     *,
@@ -25,10 +43,10 @@ def build_now_playing_embed(
 ) -> discord.Embed:
     title = track.title or "🎵 Now Playing"
     artist = track.artist_display or "Unknown Artist"
-    media_url = track.media_url
     url = track.page_url or track.audio_url
     duration_display = _format_duration(track.duration_seconds)
     requester_value = requester_display or track.requester_name
+    image_url = _embed_image_url(track.media_url)
 
     embed = discord.Embed(
         title=title or "🎵 Now Playing",
@@ -36,8 +54,8 @@ def build_now_playing_embed(
         color=0x1DB954,
     )
 
-    if media_url:
-        embed.set_image(url=media_url)
+    if image_url:
+        embed.set_image(url=image_url)
 
     if url:
         embed.add_field(
