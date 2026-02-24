@@ -1146,7 +1146,7 @@ class JukeBot(commands.Bot):
             embed.add_field(
                 name="Queue + Playback",
                 value=(
-                    "`;q` — Show the queue and session status.\n"
+                    "`;q` / `;q <depth>` / `;q page <number>` — Show the queue and session status.\n"
                     "`;p` — Start playback of the queue.\n"
                     "`;np` — Show now playing info.\n"
                     "`;pause` — Pause playback (mods).\n"
@@ -1663,33 +1663,60 @@ class JukeBot(commands.Bot):
                     await ctx.send(embed=embed)
 
         @self.command(name="q")
-        async def queue(ctx: commands.Context) -> None:
+        async def queue(ctx: commands.Context, *args: str) -> None:
             if ctx.guild is None:
                 await ctx.send("This command can only be used in a server.")
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
+            default_depth = 5
+            max_depth = 25
+            depth = default_depth
+            page = 1
+
+            if args:
+                if len(args) == 1 and args[0].isdigit():
+                    depth = max(1, min(int(args[0]), max_depth))
+                elif (
+                    len(args) == 2
+                    and args[0].lower() == "page"
+                    and args[1].isdigit()
+                ):
+                    page = max(1, int(args[1]))
+                else:
+                    await ctx.send("Usage: `;q`, `;q <depth>`, or `;q page <number>`")
+                    return
+
             lines: list[str] = []
             if session.submissions_open:
                 lines.append("Session is open.")
-                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
-                    lines.append(
-                        "Add a Suno URL to queue a song, or use `;playlist <url>`."
-                    )
-                else:
-                    lines.append("Add a Suno URL to queue a song.")
+                lines.append("Add a Suno URL to queue a song.")
             else:
                 lines.append("Session is closed.")
 
             if session.queue:
                 total = len(session.queue)
-                if total == 1:
-                    lines.append("Last song")
-                elif total > 5:
-                    lines.append(f"Next 5 out of {total}")
+                if not args:
+                    if total == 1:
+                        lines.append("Last song")
+                    elif total > 5:
+                        lines.append(f"Next 5 out of {total}")
+                    else:
+                        lines.append(f"Next {total}")
+                    queue_slice = session.queue[:default_depth]
+                    start_index = 1
                 else:
-                    lines.append(f"Next {total}")
-                for idx, track in enumerate(session.queue[:5], start=1):
+                    start_offset = (page - 1) * depth
+                    queue_slice = session.queue[start_offset : start_offset + depth]
+                    start_index = start_offset + 1
+                    total_pages = max(1, math.ceil(total / depth))
+                    lines.append(
+                        f"Queue page {min(page, total_pages)}/{total_pages} | showing up to {depth} | total tracks: {total}"
+                    )
+                    if not queue_slice:
+                        lines.append("No tracks on this page.")
+
+                for idx, track in enumerate(queue_slice, start=start_index):
                     artist = track.artist_display or "Unknown Artist"
                     lines.append(
                         f"{idx}. {track.title} by {artist} (Requested by {track.requester_name})"
