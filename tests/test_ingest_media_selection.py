@@ -36,7 +36,11 @@ class FakeSunoClient:
 
 
 class FakeTrackRepo:
+    def __init__(self) -> None:
+        self.last_upsert: TrackUpsert | None = None
+
     async def upsert(self, data: TrackUpsert) -> Track:
+        self.last_upsert = data
         return Track(
             id=uuid4(),
             suno_url=data.suno_url,
@@ -115,9 +119,10 @@ def test_ingest_media_url_prefers_image_then_falls_back_to_video(
 
 def test_ingest_converts_mp4_to_gif_when_image_missing() -> None:
     transformer = FakeMediaTransformer("https://minio.example.com/media/video.gif")
+    track_repo = FakeTrackRepo()
     ingest = IngestSunoLink(
         suno_client=FakeSunoClient(image_url=None, video_url="https://cdn.suno.ai/video.mp4"),
-        track_repo=FakeTrackRepo(),
+        track_repo=track_repo,
         submission_repo=FakeSubmissionRepo(),
         queue_repo=FakeQueueRepo(),
         media_transformer=transformer,
@@ -136,4 +141,7 @@ def test_ingest_converts_mp4_to_gif_when_image_missing() -> None:
     ))
 
     assert transformer.calls == ["https://cdn.suno.ai/video.mp4"]
+    assert track_repo.last_upsert is not None
+    assert track_repo.last_upsert.image_url == "https://minio.example.com/media/video.gif"
+    assert track_repo.last_upsert.video_url == "https://cdn.suno.ai/video.mp4"
     assert result.media_url == "https://minio.example.com/media/video.gif"
