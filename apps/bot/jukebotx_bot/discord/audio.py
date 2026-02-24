@@ -163,7 +163,11 @@ class GuildAudioController:
             return
 
         await self._ensure_track_media(track)
-        embed = build_now_playing_embed(track)
+        embed = build_now_playing_embed(
+            track,
+            requester_display=track.requester_name,
+            queue_remaining=len(self.session.queue),
+        )
         await channel.send(embed=embed)
 
     async def _wait_for_opus_ready(self, track: Track) -> None:

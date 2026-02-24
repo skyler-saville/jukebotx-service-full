@@ -1778,7 +1778,11 @@ class JukeBot(commands.Bot):
                 started = await audio.play_next(ctx.voice_client)
                 if started is not None:
                     session.now_playing_channel_id = ctx.channel.id
-                    embed = build_now_playing_embed(started)
+                    embed = build_now_playing_embed(
+                        started,
+                        requester_display=started.requester_name,
+                        queue_remaining=len(session.queue),
+                    )
                     await ctx.send(embed=embed)
 
         @self.command(name="q")
@@ -1837,7 +1841,11 @@ class JukeBot(commands.Bot):
                 await ctx.send("Nothing is playing.")
                 return
 
-            embed = build_now_playing_embed(session.now_playing)
+            embed = build_now_playing_embed(
+                session.now_playing,
+                requester_display=session.now_playing.requester_name,
+                queue_remaining=len(session.queue),
+            )
             await ctx.send(embed=embed)
 
         @self.command(name="p")
@@ -1889,7 +1897,11 @@ class JukeBot(commands.Bot):
                 return
 
             session.now_playing_channel_id = ctx.channel.id
-            embed = build_now_playing_embed(started)
+            embed = build_now_playing_embed(
+                started,
+                requester_display=started.requester_name,
+                queue_remaining=len(session.queue),
+            )
             await ctx.send(embed=embed)
             # Logging policy: emit per-event debug logs for normal command usage; rely on periodic summaries for aggregates.
             self._log_canonical_event(
@@ -1937,7 +1949,11 @@ class JukeBot(commands.Bot):
                 return
 
             session.now_playing_channel_id = ctx.channel.id
-            embed = build_now_playing_embed(started)
+            embed = build_now_playing_embed(
+                started,
+                requester_display=started.requester_name,
+                queue_remaining=len(session.queue),
+            )
             await ctx.send(content="Skipped.", embed=embed)
             self._log_canonical_event(
                 event_name="playback_skipped",
