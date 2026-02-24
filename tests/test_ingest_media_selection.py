@@ -69,6 +69,16 @@ class FakeQueueRepo:
         return data
 
 
+class FakeMediaTransformer:
+    def __init__(self, gif_url: str | None) -> None:
+        self.gif_url = gif_url
+        self.calls: list[str] = []
+
+    async def mp4_to_gif(self, *, video_url: str) -> str | None:
+        self.calls.append(video_url)
+        return self.gif_url
+
+
 @pytest.mark.parametrize(
     ("image_url", "video_url", "expected_media_url"),
     [
@@ -101,3 +111,29 @@ def test_ingest_media_url_prefers_image_then_falls_back_to_video(
     ))
 
     assert result.media_url == expected_media_url
+
+
+def test_ingest_converts_mp4_to_gif_when_image_missing() -> None:
+    transformer = FakeMediaTransformer("https://minio.example.com/media/video.gif")
+    ingest = IngestSunoLink(
+        suno_client=FakeSunoClient(image_url=None, video_url="https://cdn.suno.ai/video.mp4"),
+        track_repo=FakeTrackRepo(),
+        submission_repo=FakeSubmissionRepo(),
+        queue_repo=FakeQueueRepo(),
+        media_transformer=transformer,
+    )
+
+    import asyncio
+
+    result = asyncio.run(ingest.execute(
+        IngestSunoLinkInput(
+            guild_id=123,
+            channel_id=456,
+            message_id=789,
+            author_id=111,
+            suno_url="https://suno.com/song/abc123",
+        )
+    ))
+
+    assert transformer.calls == ["https://cdn.suno.ai/video.mp4"]
+    assert result.media_url == "https://minio.example.com/media/video.gif"

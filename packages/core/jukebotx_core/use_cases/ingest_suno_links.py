@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from jukebotx_core.ports.media_transformer import MediaTransformer
 from jukebotx_core.domain import evaluate_submission_duplication_policy
 from jukebotx_core.ports.repositories import (
     QueueItemCreate,
@@ -65,14 +66,20 @@ class IngestSunoLink:
         track_repo: TrackRepository,
         submission_repo: SubmissionRepository,
         queue_repo: QueueRepository,
+        media_transformer: MediaTransformer | None = None,
     ) -> None:
         self._suno_client = suno_client
         self._track_repo = track_repo
         self._submission_repo = submission_repo
         self._queue_repo = queue_repo
+        self._media_transformer = media_transformer
 
     async def execute(self, data: IngestSunoLinkInput) -> IngestSunoLinkResult:
         fetched = await self._suno_client.fetch_track(data.suno_url)
+
+        image_url = fetched.image_url
+        if image_url is None and fetched.video_url and self._media_transformer is not None:
+            image_url = await self._media_transformer.mp4_to_gif(video_url=fetched.video_url)
 
         track = await self._track_repo.upsert(
             TrackUpsert(
@@ -81,7 +88,7 @@ class IngestSunoLink:
                 artist_display=fetched.artist_display,
                 artist_username=fetched.artist_username,
                 lyrics=fetched.lyrics,
-                image_url=fetched.image_url,
+                image_url=image_url,
                 video_url=fetched.video_url,
                 mp3_url=fetched.mp3_url,
             )

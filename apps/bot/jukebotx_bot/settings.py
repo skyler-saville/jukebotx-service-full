@@ -41,6 +41,15 @@ class BotSettings(BaseSettings):
         default=120,
         alias="MASTER_DM_BURST_WINDOW_SECONDS",
     )
+    media_storage_provider: str = Field(default="s3", alias="MEDIA_STORAGE_PROVIDER")
+    media_storage_bucket: str = Field(default="", alias="MEDIA_STORAGE_BUCKET")
+    media_storage_prefix: str = Field(default="media-gifs", alias="MEDIA_STORAGE_PREFIX")
+    media_storage_region: str = Field(default="", alias="MEDIA_STORAGE_REGION")
+    media_storage_endpoint_url: str = Field(default="", alias="MEDIA_STORAGE_ENDPOINT_URL")
+    media_storage_access_key_id: str = Field(default="", alias="MEDIA_STORAGE_ACCESS_KEY_ID")
+    media_storage_secret_access_key: str = Field(default="", alias="MEDIA_STORAGE_SECRET_ACCESS_KEY")
+    media_storage_public_base_url: str = Field(default="", alias="MEDIA_STORAGE_PUBLIC_BASE_URL")
+    media_ffmpeg_path: str = Field(default="ffmpeg", alias="MEDIA_FFMPEG_PATH")
 
     # Pydantic v2 configuration
     model_config = SettingsConfigDict(
