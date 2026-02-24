@@ -130,6 +130,104 @@ async def test_cooldown_command_paths(bot: JukeBot) -> None:
 
 
 @pytest.mark.asyncio
+async def test_autoplay_command_supports_legacy_and_explicit_on(bot: JukeBot) -> None:
+    guild = FakeGuild(4)
+    channel = FakeChannel(14)
+    author = FakeMember(400, is_mod=True)
+    author.voice = SimpleNamespace(channel=SimpleNamespace(id=1234))
+    ctx = FakeContext(guild, author, channel)
+
+    bot._streams[guild.id] = [
+        SimpleNamespace(
+            guild_id=guild.id,
+            voice_channel_id=1234,
+            owner_user_id=author.id,
+            status="active",
+        )
+    ]
+
+    command = bot.get_command("autoplay")
+    assert command is not None
+
+    session = bot.deps.session_manager.for_guild(guild.id)
+
+    await command.callback(ctx, None)
+    assert session.autoplay_enabled is True
+    assert session.autoplay_remaining is None
+
+    await command.callback(ctx, "off")
+    assert session.autoplay_enabled is False
+    assert session.autoplay_remaining is None
+
+    await command.callback(ctx, "on")
+    assert session.autoplay_enabled is True
+    assert session.autoplay_remaining is None
+
+
+@pytest.mark.asyncio
+async def test_dj_command_supports_legacy_and_explicit_on(bot: JukeBot) -> None:
+    guild = FakeGuild(5)
+    channel = FakeChannel(15)
+    author = FakeMember(500, is_mod=True)
+    author.voice = SimpleNamespace(channel=SimpleNamespace(id=1235))
+    ctx = FakeContext(guild, author, channel)
+
+    bot._streams[guild.id] = [
+        SimpleNamespace(
+            guild_id=guild.id,
+            voice_channel_id=1235,
+            owner_user_id=author.id,
+            status="active",
+        )
+    ]
+
+    command = bot.get_command("dj")
+    assert command is not None
+
+    session = bot.deps.session_manager.for_guild(guild.id)
+
+    await command.callback(ctx, None)
+    assert session.dj_enabled is True
+    assert session.dj_remaining is None
+
+    await command.callback(ctx, "off")
+    assert session.dj_enabled is False
+    assert session.dj_remaining is None
+
+    await command.callback(ctx, "on")
+    assert session.dj_enabled is True
+    assert session.dj_remaining is None
+
+
+@pytest.mark.asyncio
+async def test_modes_command_reports_current_values(bot: JukeBot) -> None:
+    guild = FakeGuild(6)
+    channel = FakeChannel(16)
+    author = FakeMember(600, is_mod=True)
+    ctx = FakeContext(guild, author, channel)
+
+    session = bot.deps.session_manager.for_guild(guild.id)
+    session.set_autoplay(2)
+    session.set_dj(None)
+    session.cooldown_mode = CooldownMode.TIME
+    session.submission_cooldown_seconds = 20 * 60
+    session.per_user_limit = 3
+    session.session_total_limit = 10
+
+    command = bot.get_command("modes")
+    assert command is not None
+
+    await command.callback(ctx)
+
+    assert ctx.sent
+    assert "Autoplay: on (2 track(s) remaining)" in ctx.sent[-1]
+    assert "DJ mode: on (until queue is empty)" in ctx.sent[-1]
+    assert "Cooldown mode: time (20 minute(s))" in ctx.sent[-1]
+    assert "Per-user limit: 3" in ctx.sent[-1]
+    assert "Session limit: 10" in ctx.sent[-1]
+
+
+@pytest.mark.asyncio
 async def test_on_message_blocks_when_queue_mode_user_already_has_track(bot: JukeBot) -> None:
     guild = FakeGuild(2)
     channel = FakeChannel(11)

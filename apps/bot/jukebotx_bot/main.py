@@ -1171,11 +1171,12 @@ class JukeBot(commands.Bot):
                 embed.add_field(
                     name="Autoplay + DJ Mode (mods)",
                     value=(
-                        "`;autoplay` — Enable autoplay until the queue ends.\n"
+                        "`;modes` — Show autoplay/DJ/cooldown/limit status.\n"
+                        "`;autoplay` / `;autoplay on` — Enable autoplay until the queue ends.\n"
                         "`;autoplay <count>` — Play the next N tracks.\n"
                         "`;autoplay off` — Disable autoplay.\n"
                         "`;cooldown` / `;cooldown <minutes>` / `;cooldown -queue` / `;cooldown off` — Toggle submission cooldown.\n"
-                        "`;dj` / `;dj <count>` / `;dj off` — Toggle DJ mode."
+                        "`;dj` / `;dj on` / `;dj <count>` / `;dj off` — Toggle DJ mode."
                     ),
                     inline=False,
                 )
@@ -2094,7 +2095,7 @@ class JukeBot(commands.Bot):
 
             _, session = stream_session
 
-            if value is None:
+            if value is None or value.lower() == "on":
                 session.now_playing_channel_id = ctx.channel.id
                 session.set_autoplay(None)
                 await ctx.send("Autoplay enabled until queue is empty.")
@@ -2238,6 +2239,59 @@ class JukeBot(commands.Bot):
                 cooldown_seconds=session.submission_cooldown_seconds,
             )
 
+        @self.command(name="modes", aliases=["mode", "status"])
+        async def modes(ctx: commands.Context) -> None:
+            if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+                await ctx.send("This command can only be used in a server.")
+                return
+
+            session = self._get_session(ctx).for_guild(ctx.guild.id)
+
+            autoplay_value = (
+                "on (until queue is empty)"
+                if session.autoplay_enabled and session.autoplay_remaining is None
+                else (
+                    f"on ({session.autoplay_remaining} track(s) remaining)"
+                    if session.autoplay_enabled
+                    else "off"
+                )
+            )
+            dj_value = (
+                "on (until queue is empty)"
+                if session.dj_enabled and session.dj_remaining is None
+                else (
+                    f"on ({session.dj_remaining} track(s) remaining)"
+                    if session.dj_enabled
+                    else "off"
+                )
+            )
+            if session.cooldown_mode == CooldownMode.TIME:
+                cooldown_value = f"time ({session.submission_cooldown_seconds // 60} minute(s))"
+            elif session.cooldown_mode == CooldownMode.QUEUE:
+                cooldown_value = "queue"
+            else:
+                cooldown_value = "off"
+
+            per_user_limit_value = (
+                str(session.per_user_limit)
+                if session.per_user_limit is not None
+                else "unset"
+            )
+            session_limit_value = (
+                str(session.session_total_limit)
+                if session.session_total_limit is not None
+                else "unset"
+            )
+
+            await ctx.send(
+                "Current mode settings:\n"
+                f"• Autoplay: {autoplay_value}\n"
+                f"• DJ mode: {dj_value}\n"
+                f"• Cooldown mode: {cooldown_value}\n"
+                f"• Per-user limit: {per_user_limit_value}\n"
+                f"• Session limit: {session_limit_value}"
+            )
+
         @self.command(name="dj")
         async def dj(ctx: commands.Context, value: Optional[str] = None) -> None:
             if ctx.guild is None or not isinstance(ctx.author, discord.Member):
@@ -2254,7 +2308,7 @@ class JukeBot(commands.Bot):
 
             _, session = stream_session
 
-            if value is None:
+            if value is None or value.lower() == "on":
                 session.now_playing_channel_id = ctx.channel.id
                 session.set_dj(None)
                 await ctx.send("DJ mode enabled until queue is empty.")
