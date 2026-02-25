@@ -11,7 +11,7 @@ from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
 
-from jukebotx_worker.settings import load_worker_settings
+from jukebotx_worker.settings import WorkerSettings, load_worker_settings
 from jukebotx_worker.transcode import OpusTranscodeError, OpusTranscoder
 
 
@@ -28,6 +28,7 @@ async def _process_job(
     storage: OpusStorageService,
     transcoder: OpusTranscoder,
     track_repo: PostgresTrackRepository,
+    settings: WorkerSettings,
 ) -> bool:
     job = await job_repo.fetch_next_pending()
     if job is None:
@@ -66,7 +67,14 @@ async def _process_job(
         await asyncio.to_thread(transcoder.transcode, mp3_url=job.mp3_url, output_path=output_path)
     except OpusTranscodeError as exc:
         logger.error("Opus transcode failed for track %s: %s", job.track_id, exc)
-        await job_repo.mark_failed(job_id=job.id, error=str(exc))
+        await job_repo.mark_failed(
+            job_id=job.id,
+            error=str(exc),
+            max_retries=settings.opus_job_max_retries,
+            retry_backoff_seconds=settings.opus_job_retry_backoff_seconds,
+            retry_backoff_multiplier=settings.opus_job_retry_backoff_multiplier,
+            retry_max_backoff_seconds=settings.opus_job_retry_max_backoff_seconds,
+        )
         await track_repo.update_opus_metadata(
             track_id=job.track_id,
             opus_url=None,
@@ -82,7 +90,14 @@ async def _process_job(
             storage.upload_file(local_path=output_path, object_key=object_key)
         except Exception as exc:  # noqa: BLE001 - log and mark failed
             logger.error("Opus upload failed for track %s: %s", job.track_id, exc)
-            await job_repo.mark_failed(job_id=job.id, error=str(exc))
+            await job_repo.mark_failed(
+                job_id=job.id,
+                error=str(exc),
+                max_retries=settings.opus_job_max_retries,
+                retry_backoff_seconds=settings.opus_job_retry_backoff_seconds,
+                retry_backoff_multiplier=settings.opus_job_retry_backoff_multiplier,
+                retry_max_backoff_seconds=settings.opus_job_retry_max_backoff_seconds,
+            )
             await track_repo.update_opus_metadata(
                 track_id=job.track_id,
                 opus_url=None,
@@ -143,7 +158,11 @@ async def run_worker() -> None:
             ttl_seconds=settings.opus_storage_ttl_seconds,
         )
     )
-    transcoder = OpusTranscoder(ffmpeg_path=settings.opus_ffmpeg_path)
+    transcoder = OpusTranscoder(
+        ffmpeg_path=settings.opus_ffmpeg_path,
+        download_timeout_seconds=settings.opus_download_timeout_seconds,
+        bitrate_kbps=settings.opus_bitrate_kbps,
+    )
     job_repo = PostgresOpusJobRepository(async_session_factory)
     track_repo = PostgresTrackRepository(async_session_factory)
 
@@ -159,6 +178,7 @@ async def run_worker() -> None:
                 storage=storage,
                 transcoder=transcoder,
                 track_repo=track_repo,
+                settings=settings,
             )
             if not processed:
                 await asyncio.sleep(settings.opus_job_poll_seconds)

@@ -184,7 +184,15 @@ These names may evolve, but the usual suspects are:
 * `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — used by Docker Compose
 * `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI` — OAuth config for the API
 * `API_SESSION_SECRET`, `API_SESSION_TTL_SECONDS` — cookie signing + TTL for OAuth sessions
-* `OPUS_CACHE_DIR`, `OPUS_CACHE_TTL_SECONDS` — local Opus cache location + TTL (API)
+* `OPUS_CACHE_DIR`, `OPUS_CACHE_TTL_SECONDS` — local Opus cache location + TTL (API/worker)
+* `OPUS_FFMPEG_PATH` — ffmpeg binary used by the Opus worker
+* `OPUS_DOWNLOAD_TIMEOUT_SECONDS` — HTTP timeout when worker downloads source MP3 files
+* `OPUS_BITRATE_KBPS` — output Opus bitrate in kbps (worker ffmpeg `-b:a`)
+* `OPUS_JOB_POLL_SECONDS` — worker queue poll interval
+* `OPUS_JOB_MAX_RETRIES` — max retries before an Opus transcode job is marked failed
+* `OPUS_JOB_RETRY_BACKOFF_SECONDS` — optional base delay before retrying failed jobs
+* `OPUS_JOB_RETRY_BACKOFF_MULTIPLIER` — optional multiplier for exponential backoff
+* `OPUS_JOB_RETRY_MAX_BACKOFF_SECONDS` — optional cap for retry backoff delays
 * `OPUS_API_BASE_URL` — base URL for the bot to request cached Opus audio (e.g., `http://localhost:8001`)
 * `OPUS_STORAGE_PROVIDER` — set to `s3` to enable object storage for Opus files
 * `OPUS_STORAGE_BUCKET` — bucket for Opus files (MinIO/S3)
