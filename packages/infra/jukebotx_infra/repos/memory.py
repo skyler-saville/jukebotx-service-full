@@ -194,3 +194,11 @@ class InMemoryQueueRepository(QueueRepository):
 
     async def clear(self, *, guild_id: int) -> None:
         self._by_guild[guild_id] = []
+
+    async def remove(self, *, guild_id: int, queue_item_id: UUID) -> None:
+        items = self._by_guild.get(guild_id, [])
+        for idx, qi in enumerate(items):
+            if qi.id == queue_item_id:
+                del items[idx]
+                return
+        raise KeyError(f"Queue item not found: {queue_item_id}")

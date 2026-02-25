@@ -16,6 +16,8 @@ class InMemoryGuildConfigRepository(GuildConfigRepository):
         self,
         *,
         guild_id: int,
+        session_open: bool | None = None,
+        session_track_limit: int | None = None,
         submission_cooldown_seconds: int | None = None,
         cooldown_mode: str | None = None,
         autoplay_enabled: bool | None = None,
@@ -27,6 +29,8 @@ class InMemoryGuildConfigRepository(GuildConfigRepository):
         if existing is None:
             existing = GuildConfig(
                 guild_id=guild_id,
+                session_open=True,
+                session_track_limit=None,
                 submission_cooldown_seconds=15 * 60,
                 cooldown_mode="time",
                 autoplay_enabled=False,
@@ -37,6 +41,8 @@ class InMemoryGuildConfigRepository(GuildConfigRepository):
 
         updated = replace(
             existing,
+            session_open=session_open if session_open is not None else existing.session_open,
+            session_track_limit=session_track_limit if session_track_limit is not None else existing.session_track_limit,
             submission_cooldown_seconds=submission_cooldown_seconds
             if submission_cooldown_seconds is not None
             else existing.submission_cooldown_seconds,
