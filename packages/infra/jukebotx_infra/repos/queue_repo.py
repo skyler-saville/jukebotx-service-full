@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from jukebotx_core.domain import (
     QUEUE_STATUS_PLAYED,
     QUEUE_STATUS_QUEUED,
+    QUEUE_STATUS_SKIPPED,
     ensure_queue_transition,
 )
 from jukebotx_core.ports.repositories import QueueItem, QueueItemCreate, QueueRepository
@@ -102,6 +103,39 @@ class PostgresQueueRepository(QueueRepository):
                 .limit(limit)
             )
             return [_to_domain(item) for item in rows]
+
+
+    async def list(self, *, guild_id: int, limit: int = 50) -> list[QueueItem]:
+        """Return queue items (queued and playing) ordered by position."""
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(QueueItemModel)
+                .where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.status.in_([QUEUE_STATUS_QUEUED, "playing"]),
+                )
+                .order_by(QueueItemModel.position.asc())
+                .limit(limit)
+            )
+            return [_to_domain(item) for item in rows]
+
+    async def mark_skipped(self, *, guild_id: int, queue_item_id: UUID) -> None:
+        """Mark a queue item as skipped."""
+        async with self._session_factory() as session:
+            item = await session.scalar(
+                select(QueueItemModel).where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.id == queue_item_id,
+                )
+            )
+            if item is None:
+                raise KeyError(f"Queue item not found: {queue_item_id}")
+
+            ensure_queue_transition(current_status=item.status, next_status=QUEUE_STATUS_SKIPPED)
+
+            item.status = QUEUE_STATUS_SKIPPED
+            item.updated_at = _now()
+            await session.commit()
 
     async def clear(self, *, guild_id: int) -> None:
         """Clear all queued items for a guild."""
