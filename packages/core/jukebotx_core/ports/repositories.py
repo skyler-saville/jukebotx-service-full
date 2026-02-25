@@ -107,6 +107,8 @@ class QueueItemCreate:
 @dataclass(frozen=True)
 class GuildConfig:
     guild_id: int
+    session_open: bool
+    session_track_limit: int | None
     submission_cooldown_seconds: int
     cooldown_mode: str
     autoplay_enabled: bool
@@ -203,6 +205,9 @@ class QueueRepository:
     async def clear(self, *, guild_id: int) -> None:
         raise NotImplementedError
 
+    async def remove(self, *, guild_id: int, queue_item_id: UUID) -> None:
+        raise NotImplementedError
+
 
 class GuildConfigRepository:
     async def get(self, *, guild_id: int) -> GuildConfig | None:
@@ -212,6 +217,8 @@ class GuildConfigRepository:
         self,
         *,
         guild_id: int,
+        session_open: bool | None = None,
+        session_track_limit: int | None = None,
         submission_cooldown_seconds: int | None = None,
         cooldown_mode: str | None = None,
         autoplay_enabled: bool | None = None,

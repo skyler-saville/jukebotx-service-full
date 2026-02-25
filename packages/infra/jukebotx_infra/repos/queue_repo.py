@@ -142,3 +142,17 @@ class PostgresQueueRepository(QueueRepository):
         async with self._session_factory() as session:
             await session.execute(delete(QueueItemModel).where(QueueItemModel.guild_id == guild_id))
             await session.commit()
+
+    async def remove(self, *, guild_id: int, queue_item_id: UUID) -> None:
+        """Remove a queue item for a guild regardless of current status."""
+        async with self._session_factory() as session:
+            item = await session.scalar(
+                select(QueueItemModel).where(
+                    QueueItemModel.guild_id == guild_id,
+                    QueueItemModel.id == queue_item_id,
+                )
+            )
+            if item is None:
+                raise KeyError(f"Queue item not found: {queue_item_id}")
+            await session.delete(item)
+            await session.commit()

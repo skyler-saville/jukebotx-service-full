@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TrackSummary(BaseModel):
@@ -43,13 +43,57 @@ class NextQueueItemResponse(BaseModel):
     queue_item: QueueItemSummary | None
 
 
+class EnqueueTrackRequest(BaseModel):
+    track_id: UUID
+
+
+class QueueMutationResponse(BaseModel):
+    ok: bool = True
+
+
+class SessionOpenRequest(BaseModel):
+    is_open: bool
+
+
+class SessionTrackLimitRequest(BaseModel):
+    track_limit: int | None = Field(default=None, ge=1)
+
+
+class SessionAutoplayRequest(BaseModel):
+    enabled: bool
+    remaining: int | None = Field(default=None, ge=1)
+
+
+class SessionDjRequest(BaseModel):
+    enabled: bool
+    remaining: int | None = Field(default=None, ge=1)
+
+
+class SessionCooldownRequest(BaseModel):
+    mode: str
+    seconds: int = Field(ge=0)
+
+
+class GuildConfigResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    guild_id: int
+    session_open: bool
+    session_track_limit: int | None
+    submission_cooldown_seconds: int
+    cooldown_mode: str
+    autoplay_enabled: bool
+    autoplay_remaining: int | None
+    dj_enabled: bool
+    dj_remaining: int | None
+
+
 class SessionTrackResponse(BaseModel):
     track_id: UUID
     artist_display: str | None
     title: str | None
     suno_url: str
     mp3_url: str | None
-
 
 
 class OpusStatusResponse(BaseModel):

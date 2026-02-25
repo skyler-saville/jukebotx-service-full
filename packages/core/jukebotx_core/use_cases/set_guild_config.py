@@ -8,6 +8,8 @@ from jukebotx_core.ports.repositories import GuildConfig, GuildConfigRepository
 @dataclass(frozen=True)
 class SetGuildConfigInput:
     guild_id: int
+    session_open: bool | None = None
+    session_track_limit: int | None = None
     submission_cooldown_seconds: int | None = None
     cooldown_mode: str | None = None
     autoplay_enabled: bool | None = None
@@ -30,6 +32,8 @@ class SetGuildConfig:
     async def execute(self, data: SetGuildConfigInput) -> SetGuildConfigResult:
         config = await self._guild_config_repo.upsert(
             guild_id=data.guild_id,
+            session_open=data.session_open,
+            session_track_limit=data.session_track_limit,
             submission_cooldown_seconds=data.submission_cooldown_seconds,
             cooldown_mode=data.cooldown_mode,
             autoplay_enabled=data.autoplay_enabled,

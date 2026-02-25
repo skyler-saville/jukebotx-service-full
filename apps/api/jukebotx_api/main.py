@@ -25,10 +25,18 @@ from jukebotx_api.auth import (
     validate_state_token,
 )
 from jukebotx_api.schemas import (
+    EnqueueTrackRequest,
+    GuildConfigResponse,
     NextQueueItemResponse,
     OpusStatusResponse,
     QueueItemSummary,
+    QueueMutationResponse,
     QueuePreviewResponse,
+    SessionAutoplayRequest,
+    SessionCooldownRequest,
+    SessionDjRequest,
+    SessionOpenRequest,
+    SessionTrackLimitRequest,
     SessionTrackResponse,
     TrackSummary,
 )
@@ -36,9 +44,16 @@ from jukebotx_infra.opus_cache import OpusCacheService
 from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
 from jukebotx_api.settings import ApiSettings, load_api_settings
 from jukebotx_core.ports.repositories import OpusJobCreate, Track
+from jukebotx_core.use_cases.clear_queue import ClearQueue
+from jukebotx_core.use_cases.enqueue_track import EnqueueTrack, EnqueueTrackInput
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
+from jukebotx_core.use_cases.mark_track_played import MarkTrackPlayed
+from jukebotx_core.use_cases.remove_queue_item import RemoveQueueItem
+from jukebotx_core.use_cases.set_guild_config import SetGuildConfig, SetGuildConfigInput
+from jukebotx_core.use_cases.skip_track import SkipTrack
 from jukebotx_infra.db import async_session_factory
 from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
+from jukebotx_infra.repos.guild_config_repo import InMemoryGuildConfigRepository
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
@@ -49,6 +64,7 @@ app = FastAPI(title="JukeBotx API")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger(__name__)
+_guild_config_repo = InMemoryGuildConfigRepository()
 
 
 def get_queue_repo() -> PostgresQueueRepository:
@@ -65,6 +81,10 @@ def get_submission_repo() -> PostgresSubmissionRepository:
 
 def get_opus_job_repo() -> PostgresOpusJobRepository:
     return PostgresOpusJobRepository(async_session_factory)
+
+
+def get_guild_config_repo() -> InMemoryGuildConfigRepository:
+    return _guild_config_repo
 
 
 def get_opus_cache_service(settings: ApiSettings = Depends(load_api_settings)) -> OpusCacheService:
@@ -243,6 +263,174 @@ async def get_next_queue_item(
         track=TrackSummary.model_validate(track),
     )
     return NextQueueItemResponse(queue_item=queue_item)
+
+
+@app.post("/guilds/{guild_id}/queue/enqueue", response_model=QueueItemSummary)
+async def enqueue_queue_item(
+    guild_id: int,
+    payload: EnqueueTrackRequest,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+) -> QueueItemSummary:
+    ensure_guild_access(session, guild_id)
+    track = await require_track(track_repo, payload.track_id)
+    use_case = EnqueueTrack(queue_repo=queue_repo)
+    result = await use_case.execute(
+        EnqueueTrackInput(guild_id=guild_id, track_id=payload.track_id, requested_by=int(session.user_id))
+    )
+    return QueueItemSummary(
+        id=result.item.id,
+        position=result.item.position,
+        status=result.item.status,
+        requested_by=result.item.requested_by,
+        created_at=result.item.created_at,
+        updated_at=result.item.updated_at,
+        track=TrackSummary.model_validate(track),
+    )
+
+
+@app.post("/guilds/{guild_id}/queue/{queue_item_id}/skip", response_model=QueueMutationResponse)
+async def skip_queue_item(
+    guild_id: int,
+    queue_item_id: UUID,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+) -> QueueMutationResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = SkipTrack(queue_repo=queue_repo)
+    try:
+        await use_case.execute(guild_id=guild_id, queue_item_id=queue_item_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return QueueMutationResponse()
+
+
+@app.post("/guilds/{guild_id}/queue/{queue_item_id}/played", response_model=QueueMutationResponse)
+async def mark_queue_item_played(
+    guild_id: int,
+    queue_item_id: UUID,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+) -> QueueMutationResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = MarkTrackPlayed(queue_repo=queue_repo)
+    try:
+        await use_case.execute(guild_id=guild_id, queue_item_id=queue_item_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return QueueMutationResponse()
+
+
+@app.post("/guilds/{guild_id}/queue/clear", response_model=QueueMutationResponse)
+async def clear_queue_items(
+    guild_id: int,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+) -> QueueMutationResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = ClearQueue(queue_repo=queue_repo)
+    await use_case.execute(guild_id=guild_id)
+    return QueueMutationResponse()
+
+
+@app.delete("/guilds/{guild_id}/queue/{queue_item_id}", response_model=QueueMutationResponse)
+async def remove_queue_item(
+    guild_id: int,
+    queue_item_id: UUID,
+    session: SessionData = Depends(require_session),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
+) -> QueueMutationResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = RemoveQueueItem(queue_repo=queue_repo)
+    try:
+        await use_case.execute(guild_id=guild_id, queue_item_id=queue_item_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return QueueMutationResponse()
+
+
+@app.post("/guilds/{guild_id}/session/open", response_model=GuildConfigResponse)
+async def set_session_open(
+    guild_id: int,
+    payload: SessionOpenRequest,
+    session: SessionData = Depends(require_session),
+    guild_config_repo: InMemoryGuildConfigRepository = Depends(get_guild_config_repo),
+) -> GuildConfigResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = SetGuildConfig(guild_config_repo=guild_config_repo)
+    result = await use_case.execute(SetGuildConfigInput(guild_id=guild_id, session_open=payload.is_open))
+    return GuildConfigResponse.model_validate(result.config)
+
+
+@app.post("/guilds/{guild_id}/session/limit", response_model=GuildConfigResponse)
+async def set_session_track_limit(
+    guild_id: int,
+    payload: SessionTrackLimitRequest,
+    session: SessionData = Depends(require_session),
+    guild_config_repo: InMemoryGuildConfigRepository = Depends(get_guild_config_repo),
+) -> GuildConfigResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = SetGuildConfig(guild_config_repo=guild_config_repo)
+    result = await use_case.execute(SetGuildConfigInput(guild_id=guild_id, session_track_limit=payload.track_limit))
+    return GuildConfigResponse.model_validate(result.config)
+
+
+@app.post("/guilds/{guild_id}/session/autoplay", response_model=GuildConfigResponse)
+async def set_session_autoplay(
+    guild_id: int,
+    payload: SessionAutoplayRequest,
+    session: SessionData = Depends(require_session),
+    guild_config_repo: InMemoryGuildConfigRepository = Depends(get_guild_config_repo),
+) -> GuildConfigResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = SetGuildConfig(guild_config_repo=guild_config_repo)
+    result = await use_case.execute(
+        SetGuildConfigInput(
+            guild_id=guild_id,
+            autoplay_enabled=payload.enabled,
+            autoplay_remaining=payload.remaining if payload.enabled else None,
+        )
+    )
+    return GuildConfigResponse.model_validate(result.config)
+
+
+@app.post("/guilds/{guild_id}/session/dj", response_model=GuildConfigResponse)
+async def set_session_dj(
+    guild_id: int,
+    payload: SessionDjRequest,
+    session: SessionData = Depends(require_session),
+    guild_config_repo: InMemoryGuildConfigRepository = Depends(get_guild_config_repo),
+) -> GuildConfigResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = SetGuildConfig(guild_config_repo=guild_config_repo)
+    result = await use_case.execute(
+        SetGuildConfigInput(
+            guild_id=guild_id,
+            dj_enabled=payload.enabled,
+            dj_remaining=payload.remaining if payload.enabled else None,
+        )
+    )
+    return GuildConfigResponse.model_validate(result.config)
+
+
+@app.post("/guilds/{guild_id}/session/cooldown", response_model=GuildConfigResponse)
+async def set_session_cooldown(
+    guild_id: int,
+    payload: SessionCooldownRequest,
+    session: SessionData = Depends(require_session),
+    guild_config_repo: InMemoryGuildConfigRepository = Depends(get_guild_config_repo),
+) -> GuildConfigResponse:
+    ensure_guild_access(session, guild_id)
+    use_case = SetGuildConfig(guild_config_repo=guild_config_repo)
+    result = await use_case.execute(
+        SetGuildConfigInput(
+            guild_id=guild_id,
+            cooldown_mode=payload.mode,
+            submission_cooldown_seconds=payload.seconds,
+        )
+    )
+    return GuildConfigResponse.model_validate(result.config)
 
 
 @app.get("/guilds/{guild_id}/channels/{channel_id}/session/tracks", response_model=list[SessionTrackResponse])
