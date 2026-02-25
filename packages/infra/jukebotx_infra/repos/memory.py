@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from jukebotx_core.domain import (
     QUEUE_STATUS_PLAYED,
     QUEUE_STATUS_QUEUED,
+    QUEUE_STATUS_SKIPPED,
     ensure_queue_transition,
 )
 from jukebotx_core.ports.repositories import (
@@ -176,6 +177,20 @@ class InMemoryQueueRepository(QueueRepository):
         items = self._by_guild.get(guild_id, [])
         queued = [qi for qi in items if qi.status == QUEUE_STATUS_QUEUED]
         return queued[:limit]
+
+    async def list(self, *, guild_id: int, limit: int = 50) -> list[QueueItem]:
+        items = self._by_guild.get(guild_id, [])
+        active = [qi for qi in items if qi.status in {QUEUE_STATUS_QUEUED, "playing"}]
+        return active[:limit]
+
+    async def mark_skipped(self, *, guild_id: int, queue_item_id: UUID) -> None:
+        items = self._by_guild.get(guild_id, [])
+        for idx, qi in enumerate(items):
+            if qi.id == queue_item_id:
+                ensure_queue_transition(current_status=qi.status, next_status=QUEUE_STATUS_SKIPPED)
+                items[idx] = replace(qi, status=QUEUE_STATUS_SKIPPED, updated_at=_now())
+                return
+        raise KeyError(f"Queue item not found: {queue_item_id}")
 
     async def clear(self, *, guild_id: int) -> None:
         self._by_guild[guild_id] = []

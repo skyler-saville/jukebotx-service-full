@@ -130,9 +130,16 @@ class JukeBot(commands.Bot):
             trigger="setup_hook",
         )
 
-        # If you later convert cogs to extensions, load them here:
-        # await self.load_extension("jukebotx_bot.discord.cogs.queue")
-        # await self.load_extension("jukebotx_bot.discord.cogs.config")
+        for extension in (
+            "jukebotx_bot.discord.cogs.queue",
+            "jukebotx_bot.discord.cogs.config",
+            "jukebotx_bot.discord.cogs.library",
+            "jukebotx_bot.discord.events.on_ready",
+            "jukebotx_bot.discord.events.on_message",
+            "jukebotx_bot.discord.events.guild_join",
+        ):
+            if extension not in self.extensions:
+                await self.load_extension(extension)
 
         if self._auto_leave_task is None:
             self._auto_leave_task = asyncio.create_task(self._auto_leave_loop())
@@ -152,6 +159,15 @@ class JukeBot(commands.Bot):
                 await task
             self._auto_leave_task = None
         await super().close()
+
+    async def _on_ready_extension_hook(self) -> None:
+        return None
+
+    async def _on_message_extension_hook(self, message: discord.Message) -> None:
+        return None
+
+    async def _on_guild_join_extension_hook(self, guild: discord.Guild) -> None:
+        return None
 
     # -----------------------------
     # Internal helpers

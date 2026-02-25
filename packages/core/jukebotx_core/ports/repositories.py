@@ -102,6 +102,18 @@ class QueueItemCreate:
     requested_by: int
 
 
+
+
+@dataclass(frozen=True)
+class GuildConfig:
+    guild_id: int
+    submission_cooldown_seconds: int
+    cooldown_mode: str
+    autoplay_enabled: bool
+    autoplay_remaining: int | None
+    dj_enabled: bool
+    dj_remaining: int | None
+
 @dataclass(frozen=True)
 class OpusJob:
     id: UUID
@@ -182,5 +194,29 @@ class QueueRepository:
     async def preview(self, *, guild_id: int, limit: int) -> list[QueueItem]:
         raise NotImplementedError
 
+    async def list(self, *, guild_id: int, limit: int = 50) -> list[QueueItem]:
+        raise NotImplementedError
+
+    async def mark_skipped(self, *, guild_id: int, queue_item_id: UUID) -> None:
+        raise NotImplementedError
+
     async def clear(self, *, guild_id: int) -> None:
+        raise NotImplementedError
+
+
+class GuildConfigRepository:
+    async def get(self, *, guild_id: int) -> GuildConfig | None:
+        raise NotImplementedError
+
+    async def upsert(
+        self,
+        *,
+        guild_id: int,
+        submission_cooldown_seconds: int | None = None,
+        cooldown_mode: str | None = None,
+        autoplay_enabled: bool | None = None,
+        autoplay_remaining: int | None = None,
+        dj_enabled: bool | None = None,
+        dj_remaining: int | None = None,
+    ) -> GuildConfig:
         raise NotImplementedError

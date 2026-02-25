@@ -3,4 +3,6 @@ from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
 
-__all__ = ["PostgresQueueRepository", "PostgresSubmissionRepository", "PostgresTrackRepository", "PostgresOpusJobRepository"]
+__all__ = ["PostgresQueueRepository", "PostgresSubmissionRepository", "PostgresTrackRepository", "PostgresOpusJobRepository", "InMemoryGuildConfigRepository"]
+
+from jukebotx_infra.repos.guild_config_repo import InMemoryGuildConfigRepository
