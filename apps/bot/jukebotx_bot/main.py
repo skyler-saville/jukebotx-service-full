@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import subprocess
 import tempfile
 import asyncio
 from typing import Optional
@@ -56,6 +57,27 @@ AUTO_LEAVE_SOLO_SECONDS = float(os.getenv("AUTO_LEAVE_SOLO_SECONDS", "120"))
 SUMMARY_WINDOW_SECONDS = float(os.getenv("LOG_SUMMARY_WINDOW_SECONDS", "300"))
 
 logger = logging.getLogger(__name__)
+
+
+def _get_last_commit_date() -> str | None:
+    """Return the most recent git commit date formatted for display."""
+    try:
+        commit_date = subprocess.check_output(
+            ["git", "log", "-1", "--date=iso-strict", "--pretty=%cd"],
+            text=True,
+        ).strip()
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+    if not commit_date:
+        return None
+
+    try:
+        parsed_date = datetime.fromisoformat(commit_date)
+    except ValueError:
+        return commit_date
+
+    return parsed_date.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _is_mod(member: discord.Member) -> bool:
@@ -1309,7 +1331,8 @@ class JukeBot(commands.Bot):
                     "`;leave` — Leave and reset the session (mods).\n"
                     "`;open` / `;close` — Toggle submissions (mods).\n"
                     "`;web` — Share the session web URL.\n"
-                    "`;setlist` — DM the current session setlist."
+                    "`;setlist` — DM the current session setlist.\n"
+                    "`;last-commit` / `;git` — Show the latest bot commit date."
                 ),
                 inline=False,
             )
@@ -1560,6 +1583,15 @@ class JukeBot(commands.Bot):
 
             await channel.send(f"{mention} Submissions are open! {message}")
             await ctx.send("Announcement sent.")
+
+        @self.command(name="last-commit", aliases=["git", "lastcommit"])
+        async def last_commit(ctx: commands.Context) -> None:
+            commit_date = _get_last_commit_date()
+            if commit_date is None:
+                await ctx.send("Couldn't determine the last commit date.")
+                return
+
+            await ctx.send(f"Last commit date: {commit_date}")
 
         @self.command(name="open")
         async def open_submissions(ctx: commands.Context) -> None:
