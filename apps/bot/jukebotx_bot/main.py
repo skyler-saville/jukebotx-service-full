@@ -21,6 +21,11 @@ import httpx
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
+from jukebotx_bot.discord.notifications import (
+    safe_channel_send,
+    safe_react,
+    send_dm_with_fallback,
+)
 from jukebotx_bot.discord.session import (
     CooldownMode,
     ScrapeFailureEntry,
@@ -771,13 +776,17 @@ class JukeBot(commands.Bot):
                     or (now_monotonic - alerts.last_channel_warning_at) >= min_interval
                 )
             ):
-                try:
-                    await moderator_channel.send(
-                        "⚠️ Could not deliver scrape failure report because MASTER_USER_ID is not configured."
-                    )
+                sent = await safe_channel_send(
+                    logger=logger,
+                    event_name="scrape_report_missing_master_user",
+                    channel=moderator_channel,
+                    content="⚠️ Could not deliver scrape failure report because MASTER_USER_ID is not configured.",
+                    guild_id=guild_id,
+                    channel_id=moderator_channel.id,
+                    user_id=None,
+                )
+                if sent:
                     alerts.last_channel_warning_at = now_monotonic
-                except discord.HTTPException:
-                    pass
             return
 
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tmp_file:
@@ -825,13 +834,17 @@ class JukeBot(commands.Bot):
                     or (now_monotonic - alerts.last_channel_warning_at) >= min_interval
                 )
             ):
-                try:
-                    await moderator_channel.send(
-                        "⚠️ Could not deliver scrape failure report (master user not found)."
-                    )
+                sent = await safe_channel_send(
+                    logger=logger,
+                    event_name="scrape_report_master_user_not_found",
+                    channel=moderator_channel,
+                    content="⚠️ Could not deliver scrape failure report (master user not found).",
+                    guild_id=guild_id,
+                    channel_id=moderator_channel.id,
+                    user_id=master_user_id,
+                )
+                if sent:
                     alerts.last_channel_warning_at = now_monotonic
-                except discord.HTTPException:
-                    pass
         except discord.Forbidden:
             get_event_logger(
                 logger,
@@ -851,13 +864,17 @@ class JukeBot(commands.Bot):
                     or (now_monotonic - alerts.last_channel_warning_at) >= min_interval
                 )
             ):
-                try:
-                    await moderator_channel.send(
-                        "⚠️ Could not DM scrape failure report to MASTER_USER_ID."
-                    )
+                sent = await safe_channel_send(
+                    logger=logger,
+                    event_name="scrape_report_dm_forbidden",
+                    channel=moderator_channel,
+                    content="⚠️ Could not DM scrape failure report to MASTER_USER_ID.",
+                    guild_id=guild_id,
+                    channel_id=moderator_channel.id,
+                    user_id=master_user_id,
+                )
+                if sent:
                     alerts.last_channel_warning_at = now_monotonic
-                except discord.HTTPException:
-                    pass
         except discord.HTTPException as exc:
             get_event_logger(
                 logger,
@@ -889,18 +906,23 @@ class JukeBot(commands.Bot):
         async def _send_submission_feedback(
             message: discord.Message, content: str
         ) -> None:
-            try:
-                await message.author.send(content)
-                return
-            except discord.Forbidden:
-                pass
-            except discord.HTTPException:
-                return
-
-            try:
-                await message.channel.send(f"{message.author.mention} {content}")
-            except discord.HTTPException:
-                return
+            outcome = await send_dm_with_fallback(
+                logger=logger,
+                event_name="submission_feedback",
+                user=message.author,
+                dm_content=content,
+                guild_id=message.guild.id if message.guild is not None else None,
+                channel_id=message.channel.id,
+                fallback_channel=message.channel,
+                fallback_content=f"{message.author.mention} {content}",
+            )
+            get_event_logger(
+                logger,
+                event_name="submission_feedback_delivery",
+                guild_id=message.guild.id if message.guild is not None else None,
+                channel_id=message.channel.id,
+                user_id=message.author.id,
+            ).info("Submission feedback outcome=%s", outcome)
 
         @self.event
         async def on_command_error(
@@ -1208,27 +1230,40 @@ class JukeBot(commands.Bot):
 
             if added_any:
                 session.mark_submission(user_id)
-                try:
-                    await message.add_reaction("🤘")
-                except discord.HTTPException:
-                    pass
+                await safe_react(
+                    logger=logger,
+                    event_name="auto_ingest_success_reaction",
+                    message=message,
+                    emoji="🤘",
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id,
+                    user_id=message.author.id,
+                )
 
             if success_count > 0 and failure_count > 0:
-                try:
-                    await message.channel.send(
-                        f"Queued {success_count} link(s); {failure_count} failed (see logs)."
-                    )
-                except discord.HTTPException:
-                    pass
+                await safe_channel_send(
+                    logger=logger,
+                    event_name="auto_ingest_partial_success_notice",
+                    channel=message.channel,
+                    content=f"Queued {success_count} link(s); {failure_count} failed (see logs).",
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id,
+                    user_id=message.author.id,
+                )
 
             if not added_any and any(
                 outcome.get("status") in {"scrape_failure", "missing_required_fields"}
                 for outcome in url_outcomes.values()
             ):
-                try:
-                    await message.add_reaction("❌")
-                except discord.HTTPException:
-                    pass
+                await safe_react(
+                    logger=logger,
+                    event_name="auto_ingest_failure_reaction",
+                    message=message,
+                    emoji="❌",
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id,
+                    user_id=message.author.id,
+                )
 
             if blocked_reason is not None:
                 await _send_submission_feedback(message, blocked_reason)
