@@ -10,7 +10,13 @@ class WorkerSettings:
     opus_cache_dir: str
     opus_cache_ttl_seconds: int
     opus_ffmpeg_path: str
+    opus_download_timeout_seconds: int
+    opus_bitrate_kbps: int
     opus_job_poll_seconds: float
+    opus_job_max_retries: int
+    opus_job_retry_backoff_seconds: float | None
+    opus_job_retry_backoff_multiplier: float | None
+    opus_job_retry_max_backoff_seconds: float | None
     opus_storage_provider: str
     opus_storage_bucket: str
     opus_storage_prefix: str
@@ -24,12 +30,22 @@ class WorkerSettings:
 
 
 def load_worker_settings() -> WorkerSettings:
+    backoff_seconds = os.environ.get("OPUS_JOB_RETRY_BACKOFF_SECONDS")
+    backoff_multiplier = os.environ.get("OPUS_JOB_RETRY_BACKOFF_MULTIPLIER")
+    backoff_max_seconds = os.environ.get("OPUS_JOB_RETRY_MAX_BACKOFF_SECONDS")
+
     return WorkerSettings(
         database_url=os.environ.get("DATABASE_URL", ""),
         opus_cache_dir=os.environ.get("OPUS_CACHE_DIR", "static/opus"),
         opus_cache_ttl_seconds=int(os.environ.get("OPUS_CACHE_TTL_SECONDS", "604800")),
         opus_ffmpeg_path=os.environ.get("OPUS_FFMPEG_PATH", "ffmpeg"),
+        opus_download_timeout_seconds=int(os.environ.get("OPUS_DOWNLOAD_TIMEOUT_SECONDS", "30")),
+        opus_bitrate_kbps=int(os.environ.get("OPUS_BITRATE_KBPS", "128")),
         opus_job_poll_seconds=float(os.environ.get("OPUS_JOB_POLL_SECONDS", "2.5")),
+        opus_job_max_retries=max(int(os.environ.get("OPUS_JOB_MAX_RETRIES", "3")), 0),
+        opus_job_retry_backoff_seconds=float(backoff_seconds) if backoff_seconds else None,
+        opus_job_retry_backoff_multiplier=float(backoff_multiplier) if backoff_multiplier else None,
+        opus_job_retry_max_backoff_seconds=float(backoff_max_seconds) if backoff_max_seconds else None,
         opus_storage_provider=os.environ.get("OPUS_STORAGE_PROVIDER", "s3"),
         opus_storage_bucket=os.environ.get("OPUS_STORAGE_BUCKET", ""),
         opus_storage_prefix=os.environ.get("OPUS_STORAGE_PREFIX", "opus"),

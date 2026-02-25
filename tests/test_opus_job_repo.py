@@ -126,3 +126,86 @@ def test_mark_completed_and_failed_update_status() -> None:
             assert bad is not None and bad.status == "failed" and bad.error == "boom"
 
     asyncio.run(_run())
+
+
+def test_mark_failed_requeues_until_retry_budget_exhausted() -> None:
+    session_factory = _build_session_factory()
+    _cleanup_db(session_factory)
+
+    async def _run() -> None:
+        repo = PostgresOpusJobRepository(session_factory)
+        created = await repo.enqueue(OpusJobCreate(track_id=uuid4(), mp3_url="https://audio/retry.mp3"))
+
+        await repo.mark_failed(
+            job_id=created.id,
+            error="first failure",
+            max_retries=2,
+            retry_backoff_seconds=1,
+            retry_backoff_multiplier=2,
+            retry_max_backoff_seconds=10,
+        )
+
+        async with session_factory() as session:
+            first = await session.get(OpusJobModel, created.id)
+            assert first is not None
+            assert first.status == "queued"
+            assert first.retry_attempts == 1
+            assert first.next_retry_at is not None
+
+        await repo.mark_failed(
+            job_id=created.id,
+            error="second failure",
+            max_retries=2,
+            retry_backoff_seconds=1,
+            retry_backoff_multiplier=2,
+            retry_max_backoff_seconds=10,
+        )
+        await repo.mark_failed(
+            job_id=created.id,
+            error="third failure",
+            max_retries=2,
+            retry_backoff_seconds=1,
+            retry_backoff_multiplier=2,
+            retry_max_backoff_seconds=10,
+        )
+
+        async with session_factory() as session:
+            final = await session.get(OpusJobModel, created.id)
+            assert final is not None
+            assert final.status == "failed"
+            assert final.retry_attempts == 3
+            assert final.next_retry_at is None
+            assert final.error == "third failure"
+
+    asyncio.run(_run())
+
+
+def test_fetch_next_pending_respects_next_retry_at() -> None:
+    session_factory = _build_session_factory()
+    _cleanup_db(session_factory)
+
+    async def _run() -> None:
+        repo = PostgresOpusJobRepository(session_factory)
+        created = await repo.enqueue(OpusJobCreate(track_id=uuid4(), mp3_url="https://audio/retry-delay.mp3"))
+
+        await repo.mark_failed(
+            job_id=created.id,
+            error="backoff",
+            max_retries=5,
+            retry_backoff_seconds=3600,
+        )
+
+        blocked = await repo.fetch_next_pending()
+        assert blocked is None
+
+        async with session_factory() as session:
+            job = await session.get(OpusJobModel, created.id)
+            assert job is not None
+            job.next_retry_at = job.updated_at
+            await session.commit()
+
+        picked = await repo.fetch_next_pending()
+        assert picked is not None
+        assert picked.id == created.id
+
+    asyncio.run(_run())

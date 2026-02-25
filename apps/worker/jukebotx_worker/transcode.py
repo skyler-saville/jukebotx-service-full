@@ -5,22 +5,20 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from typing import Final
 from urllib.request import Request, urlopen
 
 
 logger = logging.getLogger(__name__)
-
-_DOWNLOAD_TIMEOUT_SECONDS: Final = 30
-
 
 class OpusTranscodeError(RuntimeError):
     pass
 
 
 class OpusTranscoder:
-    def __init__(self, *, ffmpeg_path: str) -> None:
+    def __init__(self, *, ffmpeg_path: str, download_timeout_seconds: int, bitrate_kbps: int) -> None:
         self._ffmpeg_path = ffmpeg_path
+        self._download_timeout_seconds = download_timeout_seconds
+        self._bitrate_kbps = bitrate_kbps
 
     def transcode(self, *, mp3_url: str, output_path: Path) -> None:
         with tempfile.TemporaryDirectory(prefix="jukebotx-opus-") as tmp_dir:
@@ -36,7 +34,7 @@ class OpusTranscoder:
         logger.info("Downloading MP3 for Opus cache: %s", url)
         request = Request(url, headers={"User-Agent": "jukebotx-opus-worker"})
         try:
-            with urlopen(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            with urlopen(request, timeout=self._download_timeout_seconds) as response:
                 with destination.open("wb") as handle:
                     shutil.copyfileobj(response, handle)
         except Exception as exc:
@@ -51,7 +49,7 @@ class OpusTranscoder:
             "-c:a",
             "libopus",
             "-b:a",
-            "128k",
+            f"{self._bitrate_kbps}k",
             "-f",
             "opus",
             str(output_path),

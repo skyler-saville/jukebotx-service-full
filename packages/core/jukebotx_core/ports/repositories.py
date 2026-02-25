@@ -123,6 +123,8 @@ class OpusJob:
     mp3_url: str
     status: str
     error: str | None
+    retry_attempts: int
+    next_retry_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -179,7 +181,16 @@ class OpusJobRepository:
     async def mark_completed(self, *, job_id: UUID) -> None:
         raise NotImplementedError
 
-    async def mark_failed(self, *, job_id: UUID, error: str) -> None:
+    async def mark_failed(
+        self,
+        *,
+        job_id: UUID,
+        error: str,
+        max_retries: int = 0,
+        retry_backoff_seconds: float | None = None,
+        retry_backoff_multiplier: float | None = None,
+        retry_max_backoff_seconds: float | None = None,
+    ) -> None:
         raise NotImplementedError
 
 
