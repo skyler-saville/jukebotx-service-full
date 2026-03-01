@@ -1,3 +1,5 @@
+name: jukebotx-${ENV:-development}
+
 services:
   db:
     image: postgres:16
@@ -7,8 +9,6 @@ services:
       POSTGRES_PASSWORD: jukebotx
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
 
   api:
     environment:
@@ -20,9 +20,6 @@ services:
     depends_on:
       - db
       - minio
-    ports:
-      - "8001:8000"
-
 
   worker:
     environment:
@@ -54,9 +51,6 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
 
 volumes:
   pgdata:
