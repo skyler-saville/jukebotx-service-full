@@ -403,11 +403,22 @@ If a target doesn’t exist yet, add it—Make is your “team interface” even
 
 ## Docker
 
-If you’re using Docker Compose, typical commands:
+This repo supports environment-specific Compose overlays so you can run multiple stacks (for example `development` and `production`) at the same time without port or container-name conflicts.
+
+1. Copy `.env.example` to `.env`.
+2. Set `ENV=development` or `ENV=production`.
+3. Start services:
 
 ```bash
 docker compose up --build
 ```
+
+Compose reads:
+
+* `COMPOSE_PROJECT_NAME=jukebotx_${ENV}` (isolates container/volume/network names)
+* `COMPOSE_FILE=docker-compose.yml:docker-compose.${ENV}.yml` (loads environment-specific port mappings)
+
+Default host ports are separated by environment (dev uses `5432/8001/9000/9001`, prod uses `15432/18001/19000/19001`) and can be overridden in `.env`.
 
 You’ll likely run either:
 

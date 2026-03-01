@@ -1,0 +1,13 @@
+services:
+  db:
+    ports:
+      - "${DB_PORT_HOST_PROD:-15432}:5432"
+
+  api:
+    ports:
+      - "${API_PORT_HOST_PROD:-18001}:8000"
+
+  minio:
+    ports:
+      - "${MINIO_PORT_HOST_PROD:-19000}:9000"
+      - "${MINIO_CONSOLE_PORT_HOST_PROD:-19001}:9001"
