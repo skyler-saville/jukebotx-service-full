@@ -1,13 +1,22 @@
 services:
   db:
+    container_name: dev_db
     ports:
       - "${DB_PORT_HOST_DEV}:5432"
 
   api:
+    container_name: dev_api
     ports:
       - "${API_PORT_HOST_DEV}:8000"
 
+  worker:
+    container_name: dev_worker
+
+  bot:
+    container_name: dev_bot
+
   minio:
+    container_name: dev_minio
     ports:
       - "${MINIO_PORT_HOST_DEV}:9000"
       - "${MINIO_CONSOLE_PORT_HOST_DEV}:9001"
