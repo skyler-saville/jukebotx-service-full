@@ -385,9 +385,30 @@ class JukeBot(commands.Bot):
                 return
 
             channel = ctx.author.voice.channel
+            voice_client = ctx.guild.voice_client
+
+            if voice_client is not None:
+                if voice_client.channel and voice_client.channel.id == channel.id:
+                    await ctx.send(f"I'm already in {channel.name}.")
+                    return
+
+                if voice_client.is_connected():
+                    await voice_client.move_to(channel)
+                    await ctx.send(f"Moved to {channel.name}!")
+                    return
+
+                # A stale/disconnected voice client can cause reconnect loops.
+                try:
+                    await voice_client.disconnect(force=True)
+                except Exception:
+                    logging.warning(
+                        "Failed to force-disconnect stale voice client for guild %s",
+                        ctx.guild.id,
+                        exc_info=True,
+                    )
 
             try:
-                await channel.connect()
+                await channel.connect(reconnect=False)
             except discord.Forbidden:
                 await ctx.send("🚫 I don't have permission to join that voice channel (View/Connect).")
                 return
