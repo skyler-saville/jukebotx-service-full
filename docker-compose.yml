@@ -42,6 +42,19 @@ services:
     depends_on:
       - db
       - minio
+      - lavalink
+
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4-alpine
+    restart: unless-stopped
+    environment:
+      _JAVA_OPTIONS: ${LAVALINK_JAVA_OPTIONS:--Xmx1G}
+      SERVER_PORT: 2333
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+    expose:
+      - "2333"
+    volumes:
+      - lavalink_plugins:/opt/Lavalink/plugins
 
   minio:
     image: minio/minio:RELEASE.2024-06-13T22-53-53Z
@@ -55,3 +68,4 @@ services:
 volumes:
   pgdata:
   minio_data:
+  lavalink_plugins:
