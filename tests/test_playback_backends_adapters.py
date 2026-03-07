@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 from pathlib import Path
 import asyncio
 import sys
@@ -79,48 +80,122 @@ async def test_discord_ffmpeg_backend_registers_and_dispatches_track_end_hook(mo
     assert observed == [(voice_client, fake_source, None)]
 
 
+class FakeLavalinkPlayer:
+    def __init__(self, guild_id: int) -> None:
+        self.guild_id = guild_id
+        self.playing = False
+        self.current = None
+
+    async def play(self, track: object) -> None:
+        self.current = track
+        self.playing = True
+
+    async def stop(self) -> None:
+        self.playing = False
+
+
+class FakePlayerManager:
+    def __init__(self) -> None:
+        self.players: dict[int, FakeLavalinkPlayer] = {}
+
+    def get(self, guild_id: int):
+        return self.players.get(guild_id)
+
+    def create(self, guild_id: int):
+        player = FakeLavalinkPlayer(guild_id)
+        self.players[guild_id] = player
+        return player
+
+    async def destroy(self, guild_id: int) -> None:
+        self.players.pop(guild_id, None)
+
+
+class FakeLavalinkClient:
+    def __init__(self) -> None:
+        self.player_manager = FakePlayerManager()
+        self._hooks = []
+
+    def add_event_hook(self, hook):
+        self._hooks.append(hook)
+
+    async def get_tracks(self, url: str):
+        return [{"identifier": url}]
+
+
+class FakeChannel:
+    def __init__(self, guild) -> None:
+        self.guild = guild
+
+
+class FakeGuild:
+    def __init__(self) -> None:
+        self.voice_client = None
+
+
+class FakeDiscordVoiceClient:
+    def __init__(self, guild: FakeGuild, channel: FakeChannel) -> None:
+        self.guild = guild
+        self.channel = channel
+        self.disconnected = False
+
+    async def move_to(self, channel: FakeChannel) -> None:
+        self.channel = channel
+
+    async def disconnect(self, *, force: bool) -> None:
+        assert force is True
+        self.disconnected = True
+        self.guild.voice_client = None
+
+
 @pytest.mark.asyncio
-async def test_lavalink_backend_delegates_to_compatibility_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeFallbackBackend:
-        def __init__(self, guild_id: int) -> None:
-            self.guild_id = guild_id
-            self.played: list[str] = []
-            self.hooks = []
+async def test_lavalink_backend_uses_lavalink_player_and_dispatches_end_hooks() -> None:
+    LavalinkPlaybackBackend._backends_by_guild.clear()
+    client = FakeLavalinkClient()
+    LavalinkPlaybackBackend.configure_client(client)
 
-        async def connect(self, channel):
-            return "connected"
-
-        async def disconnect(self, voice_client) -> None:
-            return None
-
-        async def play_track(self, voice_client, url: str) -> object:
-            self.played.append(url)
-            return "fallback-source"
-
-        async def stop(self, voice_client) -> None:
-            return None
-
-        async def skip(self, voice_client) -> None:
-            return None
-
-        def is_playing(self, voice_client) -> bool:
-            return False
-
-        def add_track_end_hook(self, hook) -> None:
-            self.hooks.append(hook)
-
-    monkeypatch.setattr("jukebotx_bot.voice.backends.lavalink.DiscordFFmpegPlaybackBackend", FakeFallbackBackend)
     backend = LavalinkPlaybackBackend(guild_id=88)
+    guild = FakeGuild()
+    channel = FakeChannel(guild)
 
-    def dummy_hook(*args, **kwargs):
-        return None
+    async def connect():
+        vc = FakeDiscordVoiceClient(guild, channel)
+        guild.voice_client = vc
+        return vc
 
-    backend.add_track_end_hook(dummy_hook)
-    source = await backend.play_track(FakeVoiceClient(), "https://cdn.example.com/track.mp3")
+    channel.connect = connect
+    voice_client = await backend.connect(channel)
 
-    assert source == "fallback-source"
-    assert backend._fallback_backend.played == ["https://cdn.example.com/track.mp3"]
-    assert backend._fallback_backend.hooks == [dummy_hook]
+    observed = []
+
+    async def hook(vc, source, error):
+        observed.append((vc, source, error))
+
+    backend.add_track_end_hook(hook)
+
+    source = await backend.play_track(voice_client, "https://cdn.example.com/track.mp3")
+    assert source == {"identifier": "https://cdn.example.com/track.mp3"}
+    assert backend.is_playing(voice_client) is True
+
+    event = type(
+        "TrackEndEvent",
+        (),
+        {
+            "guild_id": 88,
+            "reason": "FINISHED",
+            "track": source,
+            "exception": None,
+        },
+    )()
+    await client._hooks[0](event)
+
+    assert observed == [(voice_client, source, None)]
+
+    await backend.stop(voice_client)
+    assert backend.is_playing(voice_client) is False
+
+    await backend.disconnect(voice_client)
+    assert voice_client.disconnected is True
+    assert client.player_manager.get(88) is None
 
 
 def test_discord_ffmpeg_backend_rejects_non_audio_page_url() -> None:
