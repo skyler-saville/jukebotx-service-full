@@ -21,6 +21,7 @@ from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionManager, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
+from jukebotx_bot.voice.service import JoinResult, VoiceOrchestrationService
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
 from jukebotx_infra.db import async_session_factory, init_db
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
@@ -52,6 +53,7 @@ class BotDeps:
     playlist_client: HttpxSunoPlaylistClient
     submission_repo: PostgresSubmissionRepository
     queue_repo: PostgresQueueRepository
+    voice_service: VoiceOrchestrationService
 
 
 class JukeBot(commands.Bot):
@@ -102,6 +104,9 @@ class JukeBot(commands.Bot):
 
     def _get_audio(self, ctx: commands.Context) -> AudioControllerManager:
         return self.deps.audio_manager
+
+    def _get_voice(self, ctx: commands.Context) -> VoiceOrchestrationService:
+        return self.deps.voice_service
 
     def _build_opus_url(self, track_id: UUID | None) -> str | None:
         if track_id is None or self.settings.opus_api_base_url is None:
@@ -385,30 +390,8 @@ class JukeBot(commands.Bot):
                 return
 
             channel = ctx.author.voice.channel
-            voice_client = ctx.guild.voice_client
-
-            if voice_client is not None:
-                if voice_client.channel and voice_client.channel.id == channel.id:
-                    await ctx.send(f"I'm already in {channel.name}.")
-                    return
-
-                if voice_client.is_connected():
-                    await voice_client.move_to(channel)
-                    await ctx.send(f"Moved to {channel.name}!")
-                    return
-
-                # A stale/disconnected voice client can cause reconnect loops.
-                try:
-                    await voice_client.disconnect(force=True)
-                except Exception:
-                    logging.warning(
-                        "Failed to force-disconnect stale voice client for guild %s",
-                        ctx.guild.id,
-                        exc_info=True,
-                    )
-
             try:
-                await channel.connect(reconnect=False)
+                outcome = await self._get_voice(ctx).join(ctx.guild, channel)
             except discord.Forbidden:
                 await ctx.send("🚫 I don't have permission to join that voice channel (View/Connect).")
                 return
@@ -416,7 +399,15 @@ class JukeBot(commands.Bot):
                 await ctx.send(f"⚠️ Failed to join VC: {type(exc).__name__}: {exc}")
                 raise
 
-            await ctx.send(f"Joined {channel.name}!")
+            if outcome.result == JoinResult.ALREADY_IN_CHANNEL:
+                await ctx.send(f"I'm already in {outcome.channel_name}.")
+                return
+
+            if outcome.result == JoinResult.MOVED:
+                await ctx.send(f"Moved to {outcome.channel_name}!")
+                return
+
+            await ctx.send(f"Joined {outcome.channel_name}!")
 
 
         @self.command(name="leave")
@@ -432,10 +423,7 @@ class JukeBot(commands.Bot):
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.reset()
 
-            if ctx.voice_client is not None:
-                audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
-                await audio.stop(ctx.voice_client)
-                await ctx.voice_client.disconnect()
+            await self._get_voice(ctx).leave(ctx.guild)
 
             await self.deps.queue_repo.clear(guild_id=ctx.guild.id)
             await self.deps.submission_repo.clear_for_channel(
@@ -690,8 +678,7 @@ class JukeBot(commands.Bot):
             )
 
             if session.autoplay_enabled and session.now_playing is None and ctx.voice_client is not None:
-                audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
-                started = await audio.play_next(ctx.voice_client)
+                started = await self._get_voice(ctx).play_next(ctx.guild)
                 if started is not None:
                     session.now_playing_channel_id = ctx.channel.id
                     embed = build_now_playing_embed(started)
@@ -751,7 +738,6 @@ class JukeBot(commands.Bot):
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
             session.now_playing_channel_id = ctx.channel.id
-            audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
             if session.now_playing is not None:
                 await ctx.send(f"Already playing: {session.now_playing.title}. Use ;n to skip.")
                 return
@@ -765,7 +751,7 @@ class JukeBot(commands.Bot):
                     await ctx.send("Queue is empty. Drop a Suno URL.")
                 return
 
-            started = await audio.play_next(ctx.voice_client)
+            started = await self._get_voice(ctx).play_next(ctx.guild)
             if started is None:
                 if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
                     await ctx.send(
@@ -794,8 +780,7 @@ class JukeBot(commands.Bot):
                 return
 
             session = self._get_session(ctx).for_guild(ctx.guild.id)
-            audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
-            started = await audio.skip(ctx.voice_client)
+            started = await self._get_voice(ctx).skip(ctx.guild)
             if started is None:
                 await ctx.send("Skipped. Queue is now empty; playback stopped.")
                 return
@@ -818,9 +803,7 @@ class JukeBot(commands.Bot):
                 await ctx.send("I'm not connected to a voice channel.")
                 return
 
-            session = self._get_session(ctx).for_guild(ctx.guild.id)
-            audio = self._get_audio(ctx).for_guild(ctx.guild.id, session)
-            await audio.stop(ctx.voice_client)
+            await self._get_voice(ctx).stop(ctx.guild)
             await ctx.send("Playback stopped.")
 
         @self.command(name="clear")
@@ -993,9 +976,12 @@ def build_bot() -> JukeBot:
     intents = discord.Intents.default()
     intents.message_content = True  # required for prefix commands
 
+    session_manager = SessionManager()
+    audio_manager = AudioControllerManager(backend_name=settings.voice_backend)
+
     deps = BotDeps(
-        session_manager=SessionManager(),
-        audio_manager=AudioControllerManager(),
+        session_manager=session_manager,
+        audio_manager=audio_manager,
         ingest_use_case=IngestSunoLink(
             suno_client=HttpxSunoClient(),
             track_repo=PostgresTrackRepository(async_session_factory),
@@ -1005,6 +991,10 @@ def build_bot() -> JukeBot:
         playlist_client=HttpxSunoPlaylistClient(),
         submission_repo=PostgresSubmissionRepository(async_session_factory),
         queue_repo=PostgresQueueRepository(async_session_factory),
+        voice_service=VoiceOrchestrationService(
+            session_manager=session_manager,
+            audio_manager=audio_manager,
+        ),
     )
 
     return JukeBot(
