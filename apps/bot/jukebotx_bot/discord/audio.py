@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import subprocess
-import threading
 from typing import Optional
 
 import httpx
@@ -14,6 +13,8 @@ import discord
 
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
+from jukebotx_bot.voice.backends.base import PlaybackBackend
+from jukebotx_bot.voice.backends.discord_ffmpeg import DiscordFFmpegPlaybackBackend
 from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 
 
@@ -26,18 +27,18 @@ _FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
 
 
 class GuildAudioController:
-    def __init__(self, guild_id: int, session: SessionState) -> None:
+    def __init__(self, guild_id: int, session: SessionState, *, backend: PlaybackBackend | None = None) -> None:
         self.guild_id = guild_id
         self.session = session
         self._lock = asyncio.Lock()
-        self._current_source: Optional[discord.FFmpegOpusAudio] = None
-        self._stderr_thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._backend = backend or DiscordFFmpegPlaybackBackend(guild_id)
+        self._backend.add_track_end_hook(self._on_track_end)
+        self._current_source: Optional[object] = None
         self._suno_client = HttpxSunoClient()
 
     async def play_next(self, voice_client: discord.VoiceClient) -> Track | None:
         async with self._lock:
-            if voice_client.is_playing() or voice_client.is_paused():
+            if self._backend.is_playing(voice_client):
                 return None
 
             track = self.session.start_next_track()
@@ -49,32 +50,18 @@ class GuildAudioController:
             track.duration_seconds = await self._probe_duration_seconds(playback_url)
 
             try:
-                source = self._build_source(playback_url)
+                source = await self._backend.play_track(voice_client, playback_url)
             except ValueError as exc:
                 logger.error("Refusing to play invalid audio URL for guild %s: %s", self.guild_id, exc)
                 self.session.stop_playback()
                 return None
             self._current_source = source
-
-            if self._loop is None:
-                self._loop = asyncio.get_running_loop()
-
-            def _after_playback(error: Exception | None, *, current_source=source) -> None:
-                if self._loop is None:
-                    return
-                asyncio.run_coroutine_threadsafe(
-                    self._on_track_end(voice_client, current_source, error),
-                    self._loop,
-                )
-
-            voice_client.play(source, after=_after_playback)
             return track
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
         async with self._lock:
-            if voice_client.is_playing() or voice_client.is_paused():
-                voice_client.stop()
-            await self._cleanup_ffmpeg()
+            await self._backend.stop(voice_client)
+            self._current_source = None
             self.session.stop_playback()
 
     async def skip(self, voice_client: discord.VoiceClient) -> Track | None:
@@ -84,7 +71,7 @@ class GuildAudioController:
     async def _on_track_end(
         self,
         voice_client: discord.VoiceClient,
-        source: discord.FFmpegOpusAudio,
+        source: object,
         error: Exception | None,
     ) -> None:
         if error is not None:
@@ -93,7 +80,7 @@ class GuildAudioController:
         async with self._lock:
             if self._current_source is not source:
                 return
-            await self._cleanup_ffmpeg()
+            self._current_source = None
             self.session.stop_playback()
 
         self._log_track_end(error)
@@ -160,27 +147,6 @@ class GuildAudioController:
                 if asyncio.get_running_loop().time() >= deadline:
                     return
                 await asyncio.sleep(_OPUS_READY_POLL_SECONDS)
-
-    def _build_source(self, url: str) -> discord.FFmpegOpusAudio:
-        self._assert_audio_url(url)
-        source = discord.FFmpegOpusAudio(
-            url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options="-vn",
-            stderr=subprocess.PIPE,
-        )
-        self._start_ffmpeg_logger(source)
-        return source
-
-    def _assert_audio_url(self, url: str) -> None:
-        lowered = url.lower()
-        stripped = lowered.split("?", 1)[0]
-        if not lowered.startswith("http"):
-            raise ValueError(f"Audio URL must be http(s): {url}")
-        if "suno.com/song/" in lowered or "suno.com/s/" in lowered:
-            raise ValueError(f"Refusing to pass Suno page URL to ffmpeg: {url}")
-        if not (stripped.endswith(".mp3") or stripped.endswith(".opus") or stripped.endswith("/opus") or "cdn" in lowered):
-            raise ValueError(f"Refusing to pass non-audio URL to ffmpeg: {url}")
 
     async def _resolve_playback_url(self, track: Track) -> str:
         url = track.opus_url or track.audio_url
@@ -265,55 +231,6 @@ class GuildAudioController:
                 current.title,
                 f" error={error}" if error else "",
             )
-
-    def _start_ffmpeg_logger(self, source: discord.FFmpegOpusAudio) -> None:
-        process = getattr(source, "process", None)
-        if process is None or process.stderr is None:
-            return
-
-        def _read_stderr() -> None:
-            for raw_line in iter(process.stderr.readline, b""):
-                if not raw_line:
-                    break
-                line = raw_line.decode(errors="replace").rstrip()
-                if line:
-                    logger.warning("FFmpeg stderr [guild=%s]: %s", self.guild_id, line)
-
-        self._stderr_thread = threading.Thread(
-            target=_read_stderr,
-            name=f"ffmpeg-stderr-{self.guild_id}",
-            daemon=True,
-        )
-        self._stderr_thread.start()
-
-    async def _cleanup_ffmpeg(self) -> None:
-        source = self._current_source
-        if source is None:
-            return
-
-        process = getattr(source, "process", None)
-        if process is not None:
-            try:
-                if process.stdin is not None:
-                    process.stdin.close()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("Failed to close ffmpeg stdin: %s", exc)
-
-            try:
-                process.terminate()
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("Failed to terminate ffmpeg process: %s", exc)
-
-        try:
-            source.cleanup()
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to cleanup ffmpeg source: %s", exc)
-
-        self._current_source = None
 
 
 class AudioControllerManager:
