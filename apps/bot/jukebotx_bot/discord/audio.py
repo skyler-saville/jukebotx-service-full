@@ -15,6 +15,7 @@ from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
 from jukebotx_bot.voice.backends.base import PlaybackBackend
 from jukebotx_bot.voice.backends.discord_ffmpeg import DiscordFFmpegPlaybackBackend
+from jukebotx_bot.voice.backends.lavalink import LavalinkPlaybackBackend
 from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 
 
@@ -57,6 +58,12 @@ class GuildAudioController:
                 return None
             self._current_source = source
             return track
+
+    async def connect(self, channel: discord.VocalGuildChannel) -> discord.VoiceClient:
+        return await self._backend.connect(channel)
+
+    async def disconnect(self, voice_client: discord.VoiceClient) -> None:
+        await self._backend.disconnect(voice_client)
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
         async with self._lock:
@@ -234,10 +241,20 @@ class GuildAudioController:
 
 
 class AudioControllerManager:
-    def __init__(self) -> None:
+    def __init__(self, *, backend_name: str = "ffmpeg") -> None:
         self._controllers: dict[int, GuildAudioController] = {}
+        self._backend_name = backend_name.strip().lower()
 
     def for_guild(self, guild_id: int, session: SessionState) -> GuildAudioController:
         if guild_id not in self._controllers:
-            self._controllers[guild_id] = GuildAudioController(guild_id, session)
+            self._controllers[guild_id] = GuildAudioController(
+                guild_id,
+                session,
+                backend=self._create_backend(guild_id),
+            )
         return self._controllers[guild_id]
+
+    def _create_backend(self, guild_id: int) -> PlaybackBackend:
+        if self._backend_name == "lavalink":
+            return LavalinkPlaybackBackend(guild_id)
+        return DiscordFFmpegPlaybackBackend(guild_id)

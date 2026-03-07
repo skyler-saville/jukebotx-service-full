@@ -23,7 +23,7 @@ class DiscordFFmpegPlaybackBackend(PlaybackBackend):
         self._track_end_hooks: list[TrackEndHook] = []
 
     async def connect(self, channel: discord.VocalGuildChannel) -> discord.VoiceClient:
-        return await channel.connect()
+        return await channel.connect(reconnect=False)
 
     async def disconnect(self, voice_client: discord.VoiceClient) -> None:
         await self._cleanup_current_source()

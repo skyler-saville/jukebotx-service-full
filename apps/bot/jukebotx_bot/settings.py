@@ -28,6 +28,7 @@ class BotSettings(BaseSettings):
     jam_session_role_id: int | None = Field(default=None, alias="JAM_SESSION_ROLE_ID")
     web_base_url: str | None = Field(default=None, alias="WEB_BASE_URL")
     opus_api_base_url: str | None = Field(default=None, alias="OPUS_API_BASE_URL")
+    voice_backend: str = Field(default="ffmpeg", alias="VOICE_BACKEND")
 
     # Pydantic v2 configuration
     model_config = SettingsConfigDict(
