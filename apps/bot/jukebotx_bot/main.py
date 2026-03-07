@@ -15,6 +15,7 @@ from uuid import UUID
 import discord
 from discord.ext import commands
 import httpx
+import lavalink
 
 from jukebotx_bot.discord.audio import AudioControllerManager
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
@@ -54,6 +55,7 @@ class BotDeps:
     submission_repo: PostgresSubmissionRepository
     queue_repo: PostgresQueueRepository
     voice_service: VoiceOrchestrationService
+    lavalink_client: lavalink.Client | None = None
 
 
 class JukeBot(commands.Bot):
@@ -972,12 +974,29 @@ def build_bot() -> JukeBot:
     Keeps global scope clean and avoids import-time side effects.
     """
     settings = load_bot_settings()
+    settings.validate_startup()
 
     intents = discord.Intents.default()
     intents.message_content = True  # required for prefix commands
 
     session_manager = SessionManager()
     audio_manager = AudioControllerManager(backend_name=settings.voice_backend)
+
+    lavalink_client: lavalink.Client | None = None
+    if settings.is_lavalink_backend:
+        assert settings.lavalink_host is not None
+        assert settings.lavalink_password is not None
+        lavalink_client = lavalink.Client(0)
+        lavalink_client.add_node(
+            host=settings.lavalink_host,
+            port=settings.lavalink_port,
+            password=settings.lavalink_password,
+            region="us",
+            name="jukebotx-main",
+            ssl=settings.lavalink_secure,
+            resume_key=settings.lavalink_session_id,
+            resume_timeout=settings.lavalink_resume_timeout_seconds,
+        )
 
     deps = BotDeps(
         session_manager=session_manager,
@@ -995,6 +1014,7 @@ def build_bot() -> JukeBot:
             session_manager=session_manager,
             audio_manager=audio_manager,
         ),
+        lavalink_client=lavalink_client,
     )
 
     return JukeBot(
