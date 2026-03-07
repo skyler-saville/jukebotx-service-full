@@ -22,6 +22,7 @@ from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionManager, Track
 from jukebotx_bot.discord.suno import extract_suno_urls
 from jukebotx_bot.settings import load_bot_settings
+from jukebotx_bot.voice.backends.lavalink import LavalinkPlaybackBackend
 from jukebotx_bot.voice.service import JoinResult, VoiceOrchestrationService
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
 from jukebotx_infra.db import async_session_factory, init_db
@@ -987,6 +988,7 @@ def build_bot() -> JukeBot:
         assert settings.lavalink_host is not None
         assert settings.lavalink_password is not None
         lavalink_client = lavalink.Client(0)
+        LavalinkPlaybackBackend.configure_client(lavalink_client)
         lavalink_client.add_node(
             host=settings.lavalink_host,
             port=settings.lavalink_port,
@@ -997,6 +999,9 @@ def build_bot() -> JukeBot:
             resume_key=settings.lavalink_session_id,
             resume_timeout=settings.lavalink_resume_timeout_seconds,
         )
+
+    else:
+        LavalinkPlaybackBackend.configure_client(None)
 
     deps = BotDeps(
         session_manager=session_manager,
