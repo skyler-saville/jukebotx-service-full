@@ -12,14 +12,16 @@ sys.path.extend(
     ]
 )
 
-from jukebotx_bot.discord.audio import GuildAudioController
+from jukebotx_bot.discord.audio import AudioControllerManager, GuildAudioController
 from jukebotx_bot.discord.session import SessionState, Track
 from jukebotx_bot.voice.backends.base import PlaybackBackend, TrackEndHook
+from jukebotx_bot.voice.backends.lavalink import LavalinkPlaybackBackend
 
 
 class FakeVoiceClient:
     def __init__(self) -> None:
         self.playing = False
+        self.guild = None
 
 
 class FakePlaybackBackend(PlaybackBackend):
@@ -55,11 +57,19 @@ class FakePlaybackBackend(PlaybackBackend):
     def add_track_end_hook(self, hook: TrackEndHook) -> None:
         self._hooks.append(hook)
 
+    def prefer_source_audio_url(self) -> bool:
+        return False
+
     async def emit_track_end(self, voice_client, source: object, error: Exception | None = None) -> None:
         for hook in self._hooks:
             result = hook(voice_client, source, error)
             if result is not None:
                 await result
+
+
+class FakePreferAudioUrlBackend(FakePlaybackBackend):
+    def prefer_source_audio_url(self) -> bool:
+        return True
 
 
 def _build_track(title: str, requester_id: int, requester_name: str) -> Track:
@@ -135,7 +145,7 @@ async def test_track_end_without_autoplay_stops_playback_and_keeps_queue() -> No
 @pytest.mark.asyncio
 async def test_track_end_autoplay_advances_and_turns_off_when_counter_reaches_zero() -> None:
     session = SessionState()
-    session.set_autoplay(1)
+    session.set_autoplay(2)
     session.queue.append(_build_track("track1", 1, "User"))
     session.queue.append(_build_track("track2", 2, "User2"))
     backend = FakePlaybackBackend()
@@ -144,7 +154,7 @@ async def test_track_end_autoplay_advances_and_turns_off_when_counter_reaches_ze
 
     first = await controller.play_next(voice_client)
     assert first is not None
-    assert session.autoplay_enabled
+    assert session.autoplay_enabled is True
     current_source = controller._current_source
     assert current_source is not None
 
@@ -170,3 +180,29 @@ def test_session_state_start_next_track_applies_autoplay_transitions_without_bac
     assert session.now_playing is track
     assert session.autoplay_enabled is False
     assert session.autoplay_remaining is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_playback_url_prefers_audio_url_when_backend_requests_it() -> None:
+    session = SessionState()
+    backend = FakePreferAudioUrlBackend()
+    controller = GuildAudioController(guild_id=321, session=session, backend=backend)
+    track = Track(
+        audio_url="https://example.com/source.mp3",
+        opus_url="https://example.com/cached.opus",
+        page_url="https://example.com/song/source",
+        title="source",
+        artist_display="Test Artist",
+        media_url="https://example.com/media/source",
+        requester_id=1,
+        requester_name="User",
+    )
+
+    resolved = await controller._resolve_playback_url(track)
+    assert resolved == "https://example.com/source.mp3"
+
+
+def test_audio_controller_manager_supports_lavalink_backend_mode() -> None:
+    manager = AudioControllerManager(backend_name="lavalink")
+    controller = manager.for_guild(999, SessionState())
+    assert isinstance(controller._backend, LavalinkPlaybackBackend)

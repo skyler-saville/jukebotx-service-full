@@ -38,3 +38,7 @@ class PlaybackBackend(ABC):
     @abstractmethod
     def add_track_end_hook(self, hook: TrackEndHook) -> None:
         raise NotImplementedError
+
+    def prefer_source_audio_url(self) -> bool:
+        """Whether playback should prefer the original source audio URL over opus cache URLs."""
+        return False

@@ -430,7 +430,8 @@ By default, the app expects Postgres via `DATABASE_URL` (see `.env.example`).
 
 ### Voice backend (Lavalink)
 
-When running the bot with `VOICE_BACKEND=lavalink`, the Compose stack includes a managed `lavalink` service.
+When running the bot with `VOICE_BACKEND=lavalink`,
+the Compose stack includes a managed `lavalink` service.
 Use these environment values:
 
 * `VOICE_BACKEND=lavalink`
@@ -441,7 +442,7 @@ Use these environment values:
 `docker-compose.yml` maps `LAVALINK_PASSWORD` to Lavalink's `LAVALINK_SERVER_PASSWORD` internally.
 The default local JVM setting is `_JAVA_OPTIONS=-Xmx1G` (override with `LAVALINK_JAVA_OPTIONS` if needed).
 
-If you keep `VOICE_BACKEND=ffmpeg`, Lavalink is not required.
+This codebase now runs in Lavalink-only mode; `VOICE_BACKEND` must remain `lavalink`.
 
 ---
 

@@ -14,7 +14,6 @@ import discord
 from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
 from jukebotx_bot.voice.backends.base import PlaybackBackend
-from jukebotx_bot.voice.backends.discord_ffmpeg import DiscordFFmpegPlaybackBackend
 from jukebotx_bot.voice.backends.lavalink import LavalinkPlaybackBackend
 from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 
@@ -32,7 +31,7 @@ class GuildAudioController:
         self.guild_id = guild_id
         self.session = session
         self._lock = asyncio.Lock()
-        self._backend = backend or DiscordFFmpegPlaybackBackend(guild_id)
+        self._backend = backend or LavalinkPlaybackBackend(guild_id)
         self._backend.add_track_end_hook(self._on_track_end)
         self._current_source: Optional[object] = None
         self._suno_client = HttpxSunoClient()
@@ -156,6 +155,11 @@ class GuildAudioController:
                 await asyncio.sleep(_OPUS_READY_POLL_SECONDS)
 
     async def _resolve_playback_url(self, track: Track) -> str:
+        if self._backend.prefer_source_audio_url() and track.audio_url:
+            # Prefer source MP3 for Lavalink. This avoids edge cases with cached opus
+            # object URLs that may load but produce silent playback.
+            return track.audio_url
+
         url = track.opus_url or track.audio_url
         if not url:
             raise ValueError("Track is missing an audio URL")
@@ -241,9 +245,13 @@ class GuildAudioController:
 
 
 class AudioControllerManager:
-    def __init__(self, *, backend_name: str = "ffmpeg") -> None:
+    def __init__(self, *, backend_name: str = "lavalink") -> None:
         self._controllers: dict[int, GuildAudioController] = {}
         self._backend_name = backend_name.strip().lower()
+        if self._backend_name != "lavalink":
+            raise RuntimeError(
+                "Lavalink-only mode is enabled. Set VOICE_BACKEND=lavalink."
+            )
 
     def for_guild(self, guild_id: int, session: SessionState) -> GuildAudioController:
         if guild_id not in self._controllers:
@@ -255,6 +263,4 @@ class AudioControllerManager:
         return self._controllers[guild_id]
 
     def _create_backend(self, guild_id: int) -> PlaybackBackend:
-        if self._backend_name == "lavalink":
-            return LavalinkPlaybackBackend(guild_id)
-        return DiscordFFmpegPlaybackBackend(guild_id)
+        return LavalinkPlaybackBackend(guild_id)

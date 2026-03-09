@@ -75,7 +75,7 @@ async def test_discord_ffmpeg_backend_registers_and_dispatches_track_end_hook(mo
     assert voice_client.after is not None
 
     voice_client.after(None)
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)
 
     assert observed == [(voice_client, fake_source, None)]
 
@@ -83,6 +83,7 @@ async def test_discord_ffmpeg_backend_registers_and_dispatches_track_end_hook(mo
 class FakeLavalinkPlayer:
     def __init__(self, guild_id: int) -> None:
         self.guild_id = guild_id
+        self.is_connected = True
         self.playing = False
         self.current = None
 
@@ -125,6 +126,7 @@ class FakeLavalinkClient:
 class FakeChannel:
     def __init__(self, guild) -> None:
         self.guild = guild
+        self.id = 12345
 
 
 class FakeGuild:

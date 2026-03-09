@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,7 @@ class LavalinkPlaybackBackend(PlaybackBackend):
         self.guild_id = guild_id
         self._track_end_hooks: list[TrackEndHook] = []
         self._voice_client: discord.VoiceClient | None = None
+        self._voice_connect_lock = asyncio.Lock()
         type(self)._backends_by_guild[guild_id] = self
 
     @classmethod
@@ -69,6 +71,20 @@ class LavalinkPlaybackBackend(PlaybackBackend):
             event_name = type(event).__name__.lower()
             if "trackend" in event_name or "track_end" in event_name:
                 await cls._dispatch_track_end(event)
+            elif "trackstart" in event_name or "track_start" in event_name:
+                logger.info("Lavalink track start event: guild=%s", getattr(event, "guild_id", None))
+            elif "trackexception" in event_name or "track_exception" in event_name:
+                logger.error(
+                    "Lavalink track exception event: guild=%s exception=%s",
+                    getattr(event, "guild_id", None),
+                    getattr(event, "exception", None),
+                )
+            elif "trackstuck" in event_name or "track_stuck" in event_name:
+                logger.warning(
+                    "Lavalink track stuck event: guild=%s threshold_ms=%s",
+                    getattr(event, "guild_id", None),
+                    getattr(event, "threshold_ms", None),
+                )
 
         client = cls._client
         assert client is not None
@@ -146,15 +162,22 @@ class LavalinkPlaybackBackend(PlaybackBackend):
 
     async def connect(self, channel: discord.VocalGuildChannel) -> discord.VoiceClient:
         self._require_client()
+        # Create the Lavalink player before joining voice so initial VOICE_* gateway
+        # updates can be attached to an existing player.
+        player = await self._get_or_create_player()
 
         voice_client = channel.guild.voice_client
         if voice_client is None:
-            voice_client = await channel.connect()
+            voice_client_cls = self._resolve_voice_client_cls()
+            if voice_client_cls is not None:
+                voice_client = await channel.connect(cls=voice_client_cls)
+            else:
+                voice_client = await channel.connect()
         elif voice_client.channel != channel:
             await voice_client.move_to(channel)
 
         self._voice_client = voice_client
-        await self._get_or_create_player()
+        await self._dispatch_voice_state_from_voice_client(player, voice_client, channel.id)
         return voice_client
 
     async def disconnect(self, voice_client: discord.VoiceClient) -> None:
@@ -175,12 +198,20 @@ class LavalinkPlaybackBackend(PlaybackBackend):
     async def play_track(self, voice_client: discord.VoiceClient, url: str) -> object:
         self._voice_client = voice_client
         player = await self._get_or_create_player()
+        resolved_voice_client = await self._ensure_player_voice_connected(player, voice_client)
+        self._voice_client = resolved_voice_client
+
         track = await self._resolve_track(url)
 
         if not hasattr(player, "play"):
             raise RuntimeError("Lavalink player does not support play()")
 
         await self._maybe_await(player.play(track))
+        # Explicitly enforce play-state. Some sessions can remain paused across reconnects.
+        if hasattr(player, "set_pause"):
+            await self._maybe_await(player.set_pause(False))
+        if hasattr(player, "set_volume"):
+            await self._maybe_await(player.set_volume(100))
         return track
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
@@ -213,3 +244,112 @@ class LavalinkPlaybackBackend(PlaybackBackend):
 
     def add_track_end_hook(self, hook: TrackEndHook) -> None:
         self._track_end_hooks.append(hook)
+
+    def prefer_source_audio_url(self) -> bool:
+        return True
+
+    async def _dispatch_voice_state_from_voice_client(
+        self,
+        player: Any,
+        voice_client: discord.VoiceClient,
+        channel_id: int,
+    ) -> None:
+        voice_payload: dict[str, str] | None = None
+        for _ in range(20):
+            session_id = getattr(voice_client, "session_id", None)
+            endpoint = getattr(voice_client, "endpoint", None)
+            token = getattr(voice_client, "token", None)
+            if session_id and endpoint and token:
+                voice_payload = {
+                    "sessionId": str(session_id),
+                    "channelId": str(channel_id),
+                    "endpoint": str(endpoint),
+                    "token": str(token),
+                }
+                break
+            await asyncio.sleep(0.1)
+
+        if voice_payload is None:
+            logger.warning(
+                "Could not extract full Discord voice state for guild %s; Lavalink may stay silent.",
+                self.guild_id,
+            )
+            return
+
+        node = getattr(player, "node", None)
+        if node is None or not hasattr(node, "update_player"):
+            logger.warning("Lavalink player node missing update_player for guild %s.", self.guild_id)
+            return
+
+        await self._maybe_await(node.update_player(guild_id=self.guild_id, voice_state=voice_payload))
+
+    async def _ensure_player_voice_connected(
+        self,
+        player: Any,
+        voice_client: discord.VoiceClient,
+    ) -> discord.VoiceClient:
+        if bool(getattr(player, "is_connected", False)):
+            return voice_client
+
+        async with self._voice_connect_lock:
+            # Another coroutine may have connected the player while we were waiting.
+            if bool(getattr(player, "is_connected", False)):
+                return self._coalesce_voice_client(voice_client)
+
+            for attempt in range(1, 5):
+                active_voice_client = self._coalesce_voice_client(voice_client)
+                channel = getattr(active_voice_client, "channel", None)
+                if channel is not None and hasattr(channel, "id"):
+                    await self._dispatch_voice_state_from_voice_client(
+                        player,
+                        active_voice_client,
+                        int(channel.id),
+                    )
+                else:
+                    logger.warning(
+                        "Missing voice channel on attempt %s for guild %s while syncing Lavalink voice state.",
+                        attempt,
+                        self.guild_id,
+                    )
+
+                for _ in range(20):
+                    if bool(getattr(player, "is_connected", False)):
+                        return active_voice_client
+                    await asyncio.sleep(0.1)
+
+                if attempt < 4:
+                    backoff_seconds = 0.25 * attempt
+                    logger.warning(
+                        "Lavalink player still not connected for guild %s after attempt %s; retrying in %.2fs.",
+                        self.guild_id,
+                        attempt,
+                        backoff_seconds,
+                    )
+                    await asyncio.sleep(backoff_seconds)
+
+            raise RuntimeError(
+                f"Lavalink player is not voice-connected for guild {self.guild_id}; "
+                "voice state dispatch did not establish a connection."
+            )
+
+    def _coalesce_voice_client(self, fallback: discord.VoiceClient) -> discord.VoiceClient:
+        cached = self._voice_client
+        if cached is not None:
+            return cached
+        guild = getattr(fallback, "guild", None)
+        guild_voice_client = getattr(guild, "voice_client", None)
+        if guild_voice_client is not None:
+            return guild_voice_client
+        return fallback
+
+    @staticmethod
+    def _resolve_voice_client_cls() -> type[discord.VoiceClient] | None:
+        try:
+            import lavalink as lavalink_module
+        except Exception:
+            return None
+
+        voice_client_cls = getattr(lavalink_module, "LavalinkVoiceClient", None)
+        if voice_client_cls is None:
+            voice_client_cls = getattr(lavalink_module, "DiscordVoiceClient", None)
+        return voice_client_cls
