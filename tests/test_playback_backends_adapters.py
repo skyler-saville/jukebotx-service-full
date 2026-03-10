@@ -206,13 +206,13 @@ async def test_lavalink_backend_uses_lavalink_player_and_dispatches_end_hooks() 
         {
             "guild_id": 88,
             "reason": "FINISHED",
-            "track": source,
+            "track": {"identifier": source["identifier"]},
             "exception": None,
         },
     )()
     await client._hooks[0](event)
 
-    assert observed == [(voice_client, source, None)]
+    assert observed == [(voice_client, {"identifier": source["identifier"]}, None)]
 
     await backend.stop(voice_client)
     assert backend.is_playing(voice_client) is False

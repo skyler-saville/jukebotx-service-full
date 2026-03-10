@@ -88,7 +88,7 @@ class GuildAudioController:
             logger.warning("Playback error in guild %s: %s", self.guild_id, error)
 
         async with self._lock:
-            if self._current_source is not source:
+            if not self._is_current_track_end_event(source, voice_client):
                 return
             self._current_source = None
             self.session.stop_playback()
@@ -110,6 +110,43 @@ class GuildAudioController:
                 return
             if started is not None:
                 await self._announce_now_playing(voice_client, started)
+
+    def _is_current_track_end_event(self, source: object, voice_client: discord.VoiceClient) -> bool:
+        current_source = self._current_source
+        if current_source is None:
+            return False
+
+        if current_source is source:
+            return True
+
+        current_identifier = self._extract_track_match_token(current_source)
+        event_identifier = self._extract_track_match_token(source)
+        if current_identifier and event_identifier and current_identifier == event_identifier:
+            return True
+
+        return (
+            isinstance(self._backend, LavalinkPlaybackBackend)
+            and self.session.now_playing is not None
+            and not self._backend.is_playing(voice_client)
+        )
+
+    @staticmethod
+    def _extract_track_match_token(source: object) -> str | None:
+        if source is None:
+            return None
+
+        if isinstance(source, dict):
+            for key in ("identifier", "track", "uri", "url"):
+                value = source.get(key)
+                if value:
+                    return str(value)
+
+        for key in ("identifier", "track", "uri", "url"):
+            value = getattr(source, key, None)
+            if value:
+                return str(value)
+
+        return None
 
     async def _announce_now_playing(self, voice_client: discord.VoiceClient, track: Track) -> None:
         logger.info(
