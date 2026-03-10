@@ -218,10 +218,6 @@ class JukeBot(commands.Bot):
             logging.warning("Failed to prefetch opus status for %s: %s", track_id, exc)
 
     async def _init_lavalink_client(self) -> None:
-        if not self.settings.uses_lavalink:
-            LavalinkPlaybackBackend.configure_client(None)
-            return
-
         assert self.settings.lavalink_host is not None
         assert self.settings.lavalink_password is not None
 
@@ -1636,7 +1632,7 @@ def build_bot() -> JukeBot:
     intents.message_content = True  # required for prefix commands
 
     session_manager = SessionManager()
-    audio_manager = AudioControllerManager(backend_name=settings.voice_backend)
+    audio_manager = AudioControllerManager()
 
     track_repo = PostgresTrackRepository(async_session_factory)
     deps = BotDeps(

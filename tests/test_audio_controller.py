@@ -321,6 +321,6 @@ async def test_play_next_starts_before_duration_probe_finishes(monkeypatch: pyte
 
 
 def test_audio_controller_manager_supports_lavalink_backend_mode() -> None:
-    manager = AudioControllerManager(backend_name="lavalink")
+    manager = AudioControllerManager()
     controller = manager.for_guild(999, SessionState())
     assert isinstance(controller._backend, LavalinkPlaybackBackend)
