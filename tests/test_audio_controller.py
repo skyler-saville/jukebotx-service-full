@@ -266,6 +266,30 @@ async def test_play_next_skips_opus_wait_when_backend_prefers_source_audio(monke
 
 
 @pytest.mark.asyncio
+async def test_track_end_autoplay_advances_for_equivalent_lavalink_payload() -> None:
+    session = SessionState()
+    session.set_autoplay(2)
+    session.queue.append(_build_track("track1", 1, "User"))
+    session.queue.append(_build_track("track2", 2, "User2"))
+    backend = FakePreferAudioUrlBackend()
+    controller = GuildAudioController(guild_id=456, session=session, backend=backend)
+    voice_client = FakeVoiceClient()
+
+    first = await controller.play_next(voice_client)
+    assert first is not None
+    current_source = controller._current_source
+    assert isinstance(current_source, str)
+
+    equivalent_source = {"identifier": current_source}
+    voice_client.playing = False
+    await backend.emit_track_end(voice_client, equivalent_source)
+
+    assert session.now_playing is not None
+    assert session.now_playing.title == "track2"
+    assert len(backend.play_calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_play_next_starts_before_duration_probe_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
     session = SessionState()
     track = _build_track("track1", 1, "User")
