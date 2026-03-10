@@ -62,14 +62,6 @@ class BotSettings(BaseSettings):
         return self.discord_token
 
     @property
-    def is_lavalink_backend(self) -> bool:
-        return self.voice_backend.strip().lower() == "lavalink"
-
-    @property
-    def uses_lavalink(self) -> bool:
-        return self.voice_backend.strip().lower() == "lavalink"
-
-    @property
     def lavalink_uri(self) -> str:
         scheme = "https" if self.lavalink_secure else "http"
         return f"{scheme}://{self.lavalink_host}:{self.lavalink_port}"
@@ -80,9 +72,6 @@ class BotSettings(BaseSettings):
             raise RuntimeError(
                 "Lavalink-only mode is enabled. VOICE_BACKEND must be set to 'lavalink'."
             )
-
-        if not self.uses_lavalink:
-            return
 
         missing_vars: list[str] = []
         if not self.lavalink_host:

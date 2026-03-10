@@ -295,13 +295,8 @@ class GuildAudioController:
 
 
 class AudioControllerManager:
-    def __init__(self, *, backend_name: str = "lavalink") -> None:
+    def __init__(self) -> None:
         self._controllers: dict[int, GuildAudioController] = {}
-        self._backend_name = backend_name.strip().lower()
-        if self._backend_name != "lavalink":
-            raise RuntimeError(
-                "Lavalink-only mode is enabled. Set VOICE_BACKEND=lavalink."
-            )
 
     def for_guild(self, guild_id: int, session: SessionState) -> GuildAudioController:
         if guild_id not in self._controllers:
