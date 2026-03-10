@@ -52,6 +52,22 @@ _NEXT_F_PUSH_STR_RE: Final[re.Pattern[str]] = re.compile(
     r"""self\.__next_f\.push\(\s*\[\s*\d+\s*,\s*"(?P<payload>(?:\\.|[^"\\])*)"\s*\]\s*\)""",
     re.DOTALL,
 )
+_OG_AUDIO_IN_TEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"""<meta\s+property=["']og:audio["']\s+content=["'](?P<url>https?://[^"']+?\.mp3)["']""",
+    re.IGNORECASE,
+)
+_GENERIC_MP3_URL_RE: Final[re.Pattern[str]] = re.compile(
+    r"""https?://cdn\d+\.suno\.ai/[0-9a-fA-F-]{36}\.mp3""",
+    re.IGNORECASE,
+)
+_GENERIC_MP4_URL_RE: Final[re.Pattern[str]] = re.compile(
+    r"""https?://cdn\d+\.suno\.ai/[^"'\s>]+?\.mp4""",
+    re.IGNORECASE,
+)
+_VIDEO_TAG_SRC_RE: Final[re.Pattern[str]] = re.compile(
+    r"""<video\b[^>]*\bsrc=["'](?P<url>https?://[^"']+?\.mp4)["']""",
+    re.IGNORECASE,
+)
 
 # --- URL normalization helpers ---
 _SUNO_S_URL_RE: Final[re.Pattern[str]] = re.compile(r"^https?://suno\.com/s/[A-Za-z0-9_-]+/?$", re.IGNORECASE)
@@ -122,6 +138,48 @@ def _decode_stream_fragment(fragment: str) -> str:
 
 def _extract_next_f_payloads(page_html: str) -> list[str]:
     return [m.group("payload") for m in _NEXT_F_PUSH_STR_RE.finditer(page_html)]
+
+
+def _extract_mp3_url(page_html: str, *, og_audio: str | None) -> str | None:
+    if og_audio:
+        return og_audio
+
+    for candidate in _GENERIC_MP3_URL_RE.findall(page_html):
+        return candidate
+
+    for payload in _extract_next_f_payloads(page_html):
+        decoded = _decode_stream_fragment(payload)
+        og_match = _OG_AUDIO_IN_TEXT_RE.search(decoded)
+        if og_match:
+            return og_match.group("url").strip()
+
+        for candidate in _GENERIC_MP3_URL_RE.findall(decoded):
+            return candidate
+
+    return None
+
+
+def _extract_video_url(page_html: str, *, og_video: str | None) -> str | None:
+    if og_video:
+        return og_video
+
+    tag_match = _VIDEO_TAG_SRC_RE.search(page_html)
+    if tag_match:
+        return tag_match.group("url").strip()
+
+    for candidate in _GENERIC_MP4_URL_RE.findall(page_html):
+        return candidate
+
+    for payload in _extract_next_f_payloads(page_html):
+        decoded = _decode_stream_fragment(payload)
+        tag_match = _VIDEO_TAG_SRC_RE.search(decoded)
+        if tag_match:
+            return tag_match.group("url").strip()
+
+        for candidate in _GENERIC_MP4_URL_RE.findall(decoded):
+            return candidate
+
+    return None
 
 
 def _looks_like_ui_or_boilerplate(text: str) -> bool:
@@ -414,6 +472,6 @@ class HttpxSunoClient:
             artist_username=artist_username,
             lyrics=lyrics,
             image_url=og_image,
-            video_url=og_video,
-            mp3_url=og_audio,
+            video_url=_extract_video_url(page_html, og_video=og_video),
+            mp3_url=_extract_mp3_url(page_html, og_audio=og_audio),
         )

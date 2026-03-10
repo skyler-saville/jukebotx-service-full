@@ -116,6 +116,20 @@ class SessionState:
 
         return track
 
+    def rollback_started_track(self, track: Track) -> None:
+        """Undo a failed start_next_track attempt and restore queue state."""
+        if self.now_playing is track:
+            self.stop_playback()
+        self.queue.insert(0, track)
+
+        if self.autoplay_remaining is not None:
+            self.autoplay_remaining += 1
+            self.autoplay_enabled = True
+
+        if self.dj_remaining is not None:
+            self.dj_remaining += 1
+            self.dj_enabled = True
+
 
 class SessionManager:
     def __init__(self) -> None:

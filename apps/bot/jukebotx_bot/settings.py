@@ -21,6 +21,7 @@ class BotSettings(BaseSettings):
 
     discord_token: str | None = Field(default=None, alias="DISCORD_TOKEN")
     dev_discord_token: str | None = Field(default=None, alias="DEV_DISCORD_TOKEN")
+    discord_guild_id: int | None = Field(default=None, alias="DISCORD_GUILD_ID")
 
     jam_session_channel_id: int | None = Field(
         default=None, alias="JAM_SESSION_CHANNEL_ID"

@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+import time
+
 import discord
 
 from jukebotx_bot.discord.session import Track
 
 
-def build_now_playing_embed(track: Track) -> discord.Embed:
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    return f"{minutes}:{remaining_seconds:02d}"
+
+
+def _build_progress_bar(elapsed_seconds: float, duration_seconds: float, *, width: int = 16) -> str:
+    if duration_seconds <= 0:
+        return "[" + ("-" * width) + "]"
+
+    ratio = min(max(elapsed_seconds / duration_seconds, 0.0), 1.0)
+    filled = min(width, max(0, round(ratio * width)))
+    return "[" + ("=" * filled) + ("-" * (width - filled)) + "]"
+
+
+def build_now_playing_embed(
+    track: Track,
+    *,
+    started_at: float | None = None,
+    now: float | None = None,
+) -> discord.Embed:
     title = track.title or "🎵 Now Playing"
     artist = track.artist_display or "Unknown Artist"
     media_url = track.media_url
@@ -29,12 +51,19 @@ def build_now_playing_embed(track: Track) -> discord.Embed:
         )
 
     if duration:
-        minutes = int(duration // 60)
-        seconds = int(duration % 60)
         embed.add_field(
             name="⏱️ Duration",
-            value=f"{minutes}:{seconds:02d}",
+            value=_format_duration(duration),
             inline=True,
         )
+
+        if started_at is not None:
+            current_time = now if now is not None else time.monotonic()
+            elapsed = min(max(current_time - started_at, 0.0), duration)
+            embed.add_field(
+                name="▶️ Progress",
+                value=f"{_build_progress_bar(elapsed, duration)} {_format_duration(elapsed)} / {_format_duration(duration)}",
+                inline=False,
+            )
 
     return embed

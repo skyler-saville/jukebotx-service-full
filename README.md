@@ -1,6 +1,6 @@
 ## jukebotx-service-full
 
-A mono-repo for **JukeBotx**: a Discord music bot + companion API, built with a clean architecture mindset (domain-first, ports/adapters, use cases) and an “HTTP-only ingestion” approach for Suno links.
+A mono-repo for **JukeBotx**: a Discord music bot + companion API, built with a clean architecture mindset (domain-first, ports/adapters, use cases) and a **Lavalink-only** voice playback stack.
 
 This repo is set up so you can:
 
@@ -17,6 +17,7 @@ This repo is set up so you can:
 * [Architecture overview](#architecture-overview)
 * [Tech stack](#tech-stack)
 * [Repository layout](#repository-layout)
+* [Documentation](#documentation)
 * [Local setup](#local-setup)
 * [Environment variables](#environment-variables)
 * [Run locally](#run-locally)
@@ -44,7 +45,7 @@ This repo is set up so you can:
 
   * Commands/cogs, queue interactions, voice playback
   * Permissions checks
-  * FFmpeg-backed audio playback in voice channels
+  * Lavalink-backed playback in voice channels
   * Auto-ingests Suno links into Postgres when the bot is active in a guild
   * Uses core use-cases to avoid bot-specific business logic
 
@@ -96,6 +97,7 @@ This project follows a **clean architecture / DDD-ish** approach:
 * **Python 3.11**
 * **Poetry** for dependency management
 * **discord.py** for the bot (in `apps/bot`)
+* **Lavalink** for voice playback
 * **FastAPI** for the API (in `apps/api`)
 * **httpx** for Suno fetching/scraping (in `packages/infra`)
 * **Postgres + SQLAlchemy (async)** for persistence (in `packages/infra`)
@@ -135,13 +137,29 @@ jukebotx-service-full/
 │           └─ client.py
 ├─ scripts/
 │  ├─ smoke_suno_client.py
+│  ├─ smoke_lavalink.py
 │  ├─ smoke_find_lyrics_marker.py
 │  └─ smoke_ingest.py
+├─ docs/
+│  ├─ README.md
+│  ├─ architecture.md
+│  ├─ voice-lavalink.md
+│  └─ operations.md
 ├─ Makefile
 ├─ pyproject.toml
 ├─ poetry.lock
 └─ docker-compose.yml
 ```
+
+---
+
+## Documentation
+
+Project docs live in [`docs/`](docs/README.md):
+
+* [`docs/architecture.md`](docs/architecture.md) — system boundaries and runtime wiring
+* [`docs/voice-lavalink.md`](docs/voice-lavalink.md) — Lavalink flow, guild/player model, failure modes
+* [`docs/operations.md`](docs/operations.md) — local runbook, smoke tests, logs, incident triage
 
 ---
 
@@ -151,8 +169,8 @@ jukebotx-service-full/
 
 * Python **3.11**
 * Poetry installed
-* FFmpeg installed (required for voice playback)
 * Postgres available (required for Suno ingestion)
+* Docker (recommended for running Lavalink locally)
 
 ### Install dependencies
 
@@ -191,6 +209,7 @@ These names may evolve, but the usual suspects are:
 * `OPUS_STORAGE_PUBLIC_BASE_URL` — public base URL for Opus objects (optional)
 * `OPUS_STORAGE_SIGNED_URL_TTL_SECONDS` — TTL for signed URLs
 * `OPUS_STORAGE_TTL_SECONDS` — TTL for objects before refresh
+* `MEDIA_GIF_ENABLED` — enable worker MP4-to-GIF backfill for track art previews (defaults to `true`)
 
 > Do not commit `.env`. The repo should ignore it.
 
@@ -281,7 +300,10 @@ unless otherwise noted.
 
 ## Commands
 
-The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/main.py`).
+The bot supports both:
+
+* **Prefix commands** with `;`
+* **Slash commands** (`/`) for the same core playback/session flow
 
 ### Voice + queue
 
@@ -295,6 +317,21 @@ The bot uses **prefix commands** with `;` (configured in `apps/bot/jukebotx_bot/
 * `;s` — stop playback (mod-only)
 * `;clear` — clear queue (mod-only)
 * `;remove <index>` — remove item from queue (mod-only)
+
+Slash equivalents include:
+
+* `/join`, `/leave`, `/queue`, `/nowplaying`, `/play`, `/skip`, `/stop`, `/playlist`
+
+### Admin UX (slash)
+
+For role-based controls (admins/mods/DJs), use the `/admin` group:
+
+* `/admin submissions` — open/close submissions
+* `/admin limit` — per-user submission limit
+* `/admin autoplay` — off / until empty / count
+* `/admin dj` — off / until empty / count
+* `/admin clear` — clear queue
+* `/admin remove` — remove queue item by index
 
 ### Session controls
 
@@ -353,6 +390,14 @@ This helps confirm what the server returned:
 * whether OpenGraph tags exist
 * whether lyric markers exist in escaped payload strings
 
+### Smoke: Lavalink node + track loading
+
+```bash
+make smoke-lavalink URL="https://cdn1.suno.ai/<track>.mp3"
+```
+
+Use a direct audio URL for this smoke test. Suno page URLs are not valid Lavalink track identifiers.
+
 ---
 
 ## Development workflow
@@ -395,6 +440,7 @@ Your repo already uses Make (good). Typical targets to include:
 * `make up` / `make up-d` — Docker Compose lifecycle helpers
 * `make down` / `make destroy` — stop containers (destroy removes volumes)
 * `make logs` / `make ps` / `make restart` — Compose status helpers
+* `docker compose up -d --build bot` — rebuild/recreate the bot container after bot code changes
 * `make db-shell` / `make db-reset` / `make db-backup` / `make db-restore` — Postgres helpers
 
 If a target doesn’t exist yet, add it—Make is your “team interface” even if the team is just you.
@@ -412,6 +458,18 @@ This repo supports environment-specific Compose overlays so you can run multiple
 ```bash
 docker compose up --build
 ```
+
+When you change bot source code and the bot is running in Docker, a plain
+`docker compose restart bot` is not enough. The bot service in
+[`docker-compose.yml`](docker-compose.yml) is built into an image and does not
+bind-mount the repo into `/app`, so code changes require a rebuild:
+
+```bash
+docker compose up -d --build bot
+```
+
+Use `docker compose restart bot` only when you want to restart the existing image
+without picking up local code edits.
 
 Compose reads:
 
@@ -494,7 +552,7 @@ Mid-term:
 Long-term:
 
 * Multi-guild config support with a real config repository
-* Better audio pipeline and voice stability (FFmpeg lifecycle management)
+* Stronger voice reliability and reconnect behavior around Discord/Lavalink session churn
 * Observability: metrics + health checks
 
 ---

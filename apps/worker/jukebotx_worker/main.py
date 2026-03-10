@@ -4,18 +4,24 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import shutil
+import subprocess
+import tempfile
+from urllib.request import Request, urlopen
 
 from jukebotx_infra.opus_cache import OpusCacheService
 from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
 from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
+from jukebotx_infra.suno import BrowserSunoMediaClient
 
 from jukebotx_worker.settings import load_worker_settings
 from jukebotx_worker.transcode import OpusTranscodeError, OpusTranscoder
 
 
 logger = logging.getLogger(__name__)
+_DOWNLOAD_TIMEOUT_SECONDS = 30
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -119,6 +125,137 @@ async def _process_job(
     return True
 
 
+async def _process_media_backfill(
+    *,
+    track_repo: PostgresTrackRepository,
+    media_client: BrowserSunoMediaClient,
+    min_track_age_seconds: int,
+) -> bool:
+    stale_before = _now() - timedelta(seconds=min_track_age_seconds)
+    track = await track_repo.fetch_next_missing_media(stale_before=stale_before)
+    if track is None:
+        return False
+
+    try:
+        metadata = await media_client.fetch_media(track.suno_url)
+    except Exception as exc:  # noqa: BLE001 - worker loop should remain resilient
+        logger.warning("Media backfill failed for track %s (%s): %s", track.id, track.suno_url, exc)
+        await track_repo.mark_media_backfill_attempted(track_id=track.id)
+        return True
+
+    if metadata.image_url is None and metadata.video_url is None:
+        logger.info("Media backfill found no media for track %s", track.id)
+        await track_repo.mark_media_backfill_attempted(track_id=track.id)
+        return True
+
+    await track_repo.update_media_metadata(
+        track_id=track.id,
+        image_url=metadata.image_url,
+        video_url=metadata.video_url,
+    )
+    logger.info(
+        "Media backfill updated track %s (image=%s video=%s)",
+        track.id,
+        bool(metadata.image_url),
+        bool(metadata.video_url),
+    )
+    return True
+
+
+def _download_remote_file(*, url: str, destination: Path) -> None:
+    request = Request(url, headers={"User-Agent": "jukebotx-media-worker/1.0"})
+    with urlopen(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        with destination.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+
+
+def _transcode_video_to_gif(
+    *,
+    ffmpeg_path: str,
+    input_path: Path,
+    output_path: Path,
+    fps: int,
+    width: int,
+) -> None:
+    filter_graph = f"fps={fps},scale={width}:-1:flags=lanczos"
+    command = [
+        ffmpeg_path,
+        "-y",
+        "-i",
+        str(input_path),
+        "-vf",
+        filter_graph,
+        "-loop",
+        "0",
+        str(output_path),
+    ]
+    subprocess.run(command, check=True, capture_output=True, text=True)
+
+
+async def _process_media_gif_backfill(
+    *,
+    track_repo: PostgresTrackRepository,
+    storage: OpusStorageService,
+    min_track_age_seconds: int,
+    ffmpeg_path: str,
+    fps: int,
+    width: int,
+    storage_prefix: str,
+) -> bool:
+    stale_before = _now() - timedelta(seconds=min_track_age_seconds)
+    track = await track_repo.fetch_next_video_missing_gif(stale_before=stale_before)
+    if track is None:
+        return False
+    if track.video_url is None:
+        await track_repo.mark_media_backfill_attempted(track_id=track.id)
+        return True
+    if not storage.is_enabled:
+        logger.warning("MEDIA_GIF_ENABLED is true but storage is not configured; skipping GIF conversion.")
+        await track_repo.mark_media_backfill_attempted(track_id=track.id)
+        return True
+
+    with tempfile.TemporaryDirectory(prefix="jukebotx-gif-") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        input_path = tmp_path / "input.mp4"
+        output_path = tmp_path / "output.gif"
+
+        try:
+            await asyncio.to_thread(_download_remote_file, url=track.video_url, destination=input_path)
+            await asyncio.to_thread(
+                _transcode_video_to_gif,
+                ffmpeg_path=ffmpeg_path,
+                input_path=input_path,
+                output_path=output_path,
+                fps=fps,
+                width=width,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GIF conversion failed for track %s: %s", track.id, exc)
+            await track_repo.mark_media_backfill_attempted(track_id=track.id)
+            return True
+
+        object_key = f"{storage_prefix.strip('/')}/{track.id}.gif"
+        try:
+            storage.upload_media_file(
+                local_path=output_path,
+                object_key=object_key,
+                content_type="image/gif",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GIF upload failed for track %s: %s", track.id, exc)
+            await track_repo.mark_media_backfill_attempted(track_id=track.id)
+            return True
+
+    gif_url = storage.public_url(object_key=object_key) or storage.get_access_url(object_key=object_key)
+    await track_repo.update_media_metadata(
+        track_id=track.id,
+        image_url=gif_url,
+        video_url=track.video_url,
+    )
+    logger.info("GIF media generated for track %s", track.id)
+    return True
+
+
 async def run_worker() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = load_worker_settings()
@@ -146,27 +283,77 @@ async def run_worker() -> None:
     transcoder = OpusTranscoder(ffmpeg_path=settings.opus_ffmpeg_path)
     job_repo = PostgresOpusJobRepository(async_session_factory)
     track_repo = PostgresTrackRepository(async_session_factory)
+    media_client: BrowserSunoMediaClient | None = None
 
     await init_db()
 
     logger.info("Opus worker started. Poll interval=%.2fs", settings.opus_job_poll_seconds)
-
-    while True:
+    if settings.media_backfill_enabled:
+        media_client = BrowserSunoMediaClient(
+            timeout_seconds=settings.media_backfill_browser_timeout_seconds,
+            user_agent=settings.media_backfill_user_agent,
+        )
         try:
-            processed = await _process_job(
-                job_repo=job_repo,
-                cache=cache,
-                storage=storage,
-                transcoder=transcoder,
-                track_repo=track_repo,
+            await media_client.start()
+            logger.info(
+                "Media backfill enabled. Poll interval=%.2fs min_track_age=%ss",
+                settings.media_backfill_poll_seconds,
+                settings.media_backfill_min_track_age_seconds,
             )
-            if not processed:
-                await asyncio.sleep(settings.opus_job_poll_seconds)
-        except asyncio.CancelledError:
-            raise
         except Exception:
-            logger.exception("Worker loop error")
-            await asyncio.sleep(settings.opus_job_poll_seconds)
+            logger.exception("Disabling media backfill; browser startup failed.")
+            media_client = None
+
+    next_media_poll_at = asyncio.get_running_loop().time()
+    next_media_gif_poll_at = asyncio.get_running_loop().time()
+
+    try:
+        while True:
+            try:
+                processed = await _process_job(
+                    job_repo=job_repo,
+                    cache=cache,
+                    storage=storage,
+                    transcoder=transcoder,
+                    track_repo=track_repo,
+                )
+
+                now_monotonic = asyncio.get_running_loop().time()
+                media_processed = False
+                media_gif_processed = False
+                if (
+                    media_client is not None
+                    and now_monotonic >= next_media_poll_at
+                ):
+                    media_processed = await _process_media_backfill(
+                        track_repo=track_repo,
+                        media_client=media_client,
+                        min_track_age_seconds=settings.media_backfill_min_track_age_seconds,
+                    )
+                    next_media_poll_at = now_monotonic + settings.media_backfill_poll_seconds
+
+                if settings.media_gif_enabled and now_monotonic >= next_media_gif_poll_at:
+                    media_gif_processed = await _process_media_gif_backfill(
+                        track_repo=track_repo,
+                        storage=storage,
+                        min_track_age_seconds=settings.media_gif_min_track_age_seconds,
+                        ffmpeg_path=settings.media_gif_ffmpeg_path,
+                        fps=settings.media_gif_fps,
+                        width=settings.media_gif_width,
+                        storage_prefix=settings.media_gif_storage_prefix,
+                    )
+                    next_media_gif_poll_at = now_monotonic + settings.media_gif_poll_seconds
+
+                if not processed and not media_processed and not media_gif_processed:
+                    await asyncio.sleep(settings.opus_job_poll_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Worker loop error")
+                await asyncio.sleep(settings.opus_job_poll_seconds)
+    finally:
+        if media_client is not None:
+            await media_client.close()
 
 
 def main() -> None:

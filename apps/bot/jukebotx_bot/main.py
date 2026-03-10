@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import inspect
 import logging
 import math
 import os
@@ -13,6 +14,7 @@ from typing import Optional
 from uuid import UUID
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 import httpx
 import lavalink
@@ -55,6 +57,7 @@ class BotDeps:
     playlist_client: HttpxSunoPlaylistClient
     submission_repo: PostgresSubmissionRepository
     queue_repo: PostgresQueueRepository
+    track_repo: PostgresTrackRepository
     voice_service: VoiceOrchestrationService
     lavalink_client: lavalink.Client | None = None
 
@@ -83,10 +86,14 @@ class JukeBot(commands.Bot):
         logging.basicConfig(level=logging.INFO)
 
         self.remove_command("help")
+        self._lavalink_socket_listener_registered = False
+        self._gif_reaction_task: asyncio.Task[None] | None = None
+        self._gif_reacted_submission_ids: set[int] = set()
 
         # Register events + commands once, right after construction.
         self._register_events()
         self._register_commands()
+        self._register_slash_commands()
 
     async def setup_hook(self) -> None:
         """
@@ -94,6 +101,9 @@ class JukeBot(commands.Bot):
         Runs once, before on_ready, after the bot connects.
         """
         await init_db()
+        await self._init_lavalink_client()
+        await self._sync_app_commands()
+        self._start_gif_reaction_task()
 
         # If you later convert cogs to extensions, load them here:
         # await self.load_extension("jukebotx_bot.discord.cogs.queue")
@@ -117,6 +127,86 @@ class JukeBot(commands.Bot):
         base_url = self.settings.opus_api_base_url.rstrip("/")
         return f"{base_url}/tracks/{track_id}/opus"
 
+    async def _sync_app_commands(self) -> None:
+        guild_id = getattr(self.settings, "discord_guild_id", None)
+        try:
+            if guild_id is not None:
+                guild = discord.Object(id=int(guild_id))
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logging.info("Synced %s app command(s) to guild %s.", len(synced), guild_id)
+                return
+
+            synced = await self.tree.sync()
+            logging.info("Synced %s global app command(s).", len(synced))
+        except discord.Forbidden as exc:
+            if guild_id is not None:
+                logging.warning(
+                    "Skipping guild app-command sync for guild %s: missing access (%s). "
+                    "Check DISCORD_GUILD_ID, bot membership, and applications.commands scope.",
+                    guild_id,
+                    exc,
+                )
+                return
+            logging.warning("Skipping global app-command sync: missing access (%s).", exc)
+        except Exception:
+            logging.exception("Failed to sync app commands.")
+
+    def _start_gif_reaction_task(self) -> None:
+        if self._gif_reaction_task is None or self._gif_reaction_task.done():
+            self._gif_reaction_task = asyncio.create_task(self._gif_reaction_loop())
+
+    async def _gif_reaction_loop(self) -> None:
+        while not self.is_closed():
+            try:
+                await self._process_gif_reactions_once()
+            except Exception:
+                logging.exception("GIF reaction poll failed.")
+            await asyncio.sleep(10)
+
+    async def _process_gif_reactions_once(self) -> None:
+        updated_since = datetime.now(timezone.utc) - timedelta(hours=24)
+        tracks = await self.deps.track_repo.fetch_recent_gif_tracks(updated_since=updated_since)
+        for track in tracks:
+            submissions = await self.deps.submission_repo.list_for_track(track_id=track.id)
+            for submission in submissions:
+                if submission.message_id in self._gif_reacted_submission_ids:
+                    continue
+                await self._add_gif_reaction(submission.channel_id, submission.message_id)
+                self._gif_reacted_submission_ids.add(submission.message_id)
+
+    async def _add_gif_reaction(self, channel_id: int, message_id: int) -> None:
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(channel_id)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                return
+
+        if not isinstance(channel, discord.abc.Messageable):
+            return
+
+        try:
+            message = await channel.fetch_message(message_id)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            return
+
+        try:
+            await message.add_reaction("🎞️")
+        except discord.HTTPException:
+            return
+
+    async def close(self) -> None:
+        task = self._gif_reaction_task
+        self._gif_reaction_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await super().close()
+
     async def _prefetch_opus(self, track_id: UUID) -> None:
         if self.settings.opus_api_base_url is None:
             return
@@ -126,6 +216,56 @@ class JukeBot(commands.Bot):
                 await client.get(status_url)
         except Exception as exc:
             logging.warning("Failed to prefetch opus status for %s: %s", track_id, exc)
+
+    async def _init_lavalink_client(self) -> None:
+        if not self.settings.uses_lavalink:
+            LavalinkPlaybackBackend.configure_client(None)
+            return
+
+        assert self.settings.lavalink_host is not None
+        assert self.settings.lavalink_password is not None
+
+        if self.user is None:
+            raise RuntimeError("Discord client user is unavailable; cannot initialize Lavalink client user ID.")
+
+        lavalink_client = lavalink.Client(int(self.user.id))
+        LavalinkPlaybackBackend.configure_client(lavalink_client)
+
+        add_node_kwargs: dict[str, object] = {
+            "host": self.settings.lavalink_host,
+            "port": self.settings.lavalink_port,
+            "password": self.settings.lavalink_password,
+            "region": "us",
+            "name": "jukebotx-main",
+            "ssl": self.settings.lavalink_secure,
+        }
+
+        add_node_params = inspect.signature(lavalink_client.add_node).parameters
+        if "resume_key" in add_node_params:
+            add_node_kwargs["resume_key"] = self.settings.lavalink_session_id
+            if "resume_timeout" in add_node_params:
+                add_node_kwargs["resume_timeout"] = self.settings.lavalink_resume_timeout_seconds
+        elif "session_id" in add_node_params:
+            add_node_kwargs["session_id"] = self.settings.lavalink_session_id
+            if self.settings.lavalink_resume_timeout_seconds is not None:
+                logging.warning(
+                    "Installed lavalink client does not support resume_timeout; ignoring "
+                    "LAVALINK_RESUME_TIMEOUT_SECONDS."
+                )
+
+        try:
+            lavalink_client.add_node(**add_node_kwargs)
+        except Exception:
+            session = getattr(lavalink_client, "_session", None)
+            if session is not None and hasattr(session, "close"):
+                close_result = session.close()
+                if inspect.isawaitable(close_result):
+                    await close_result
+            raise
+        if not self._lavalink_socket_listener_registered:
+            self.add_listener(lavalink_client.voice_update_handler, "on_socket_response")
+            self._lavalink_socket_listener_registered = True
+        object.__setattr__(self.deps, "lavalink_client", lavalink_client)
 
     # -----------------------------
     # Events
@@ -164,6 +304,7 @@ class JukeBot(commands.Bot):
             Fired when the client has connected and the bot identity is known.
             """
             assert self.user is not None, "client.user is unexpectedly None in on_ready()"
+            self._sync_lavalink_user_id()
 
             bot_name = self.user.name.lower().strip()
             env = self.settings.env.lower().strip()
@@ -185,6 +326,30 @@ class JukeBot(commands.Bot):
             )
 
             print(f"Connected as {self.user} (env={self.settings.env})")
+
+        @self.event
+        async def on_socket_response(payload: dict[str, object]) -> None:
+            if self._lavalink_socket_listener_registered:
+                return
+            lavalink_client = self.deps.lavalink_client
+            if lavalink_client is None:
+                return
+
+            event_type = payload.get("t")
+            if event_type not in {"VOICE_SERVER_UPDATE", "VOICE_STATE_UPDATE"}:
+                return
+
+            handler = getattr(lavalink_client, "voice_update_handler", None)
+            if handler is None:
+                logging.warning("Lavalink client is missing voice_update_handler; voice updates were dropped.")
+                return
+
+            try:
+                result = handler(payload)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logging.exception("Failed to forward Discord voice update event to Lavalink.")
 
         @self.event
         async def on_message(message: discord.Message) -> None:
@@ -268,6 +433,9 @@ class JukeBot(commands.Bot):
 
                 if not result.mp3_url:
                     logging.warning("Skipping Suno URL without mp3_url: %s", url)
+                    await message.channel.send(
+                        "I found that Suno track, but Suno did not expose a playable MP3 URL for it, so I couldn't queue it."
+                    )
                     continue
 
                 opus_url = self._build_opus_url(result.track_id)
@@ -310,9 +478,484 @@ class JukeBot(commands.Bot):
 
             await self.process_commands(message)
 
+    def _sync_lavalink_user_id(self) -> None:
+        lavalink_client = self.deps.lavalink_client
+        if lavalink_client is None or self.user is None:
+            return
+
+        user_id = int(self.user.id)
+        setter = getattr(lavalink_client, "set_user_id", None)
+        if callable(setter):
+            setter(user_id)
+            return
+
+        synced = False
+        for attr_name in ("user_id", "_user_id"):
+            if not hasattr(lavalink_client, attr_name):
+                continue
+            try:
+                setattr(lavalink_client, attr_name, user_id)
+                synced = True
+            except Exception:
+                logging.exception("Failed setting Lavalink client %s to %s.", attr_name, user_id)
+
+        if not synced:
+            logging.warning(
+                "Could not sync Lavalink client user ID. Voice sessions may fail to establish."
+            )
+
     # -----------------------------
     # Commands
     # -----------------------------
+    def _register_slash_commands(self) -> None:
+        async def _respond(
+            interaction: discord.Interaction,
+            *,
+            content: str | None = None,
+            embed: discord.Embed | None = None,
+            ephemeral: bool = False,
+        ) -> None:
+            if interaction.response.is_done():
+                await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+            else:
+                await interaction.response.send_message(content=content, embed=embed, ephemeral=ephemeral)
+
+        def _require_member(interaction: discord.Interaction) -> discord.Member | None:
+            if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+                return None
+            return interaction.user
+
+        async def _ensure_mod(interaction: discord.Interaction) -> discord.Member | None:
+            member = _require_member(interaction)
+            if member is None:
+                await _respond(interaction, content="This command can only be used in a server.", ephemeral=True)
+                return None
+            if not _is_mod(member):
+                await _respond(interaction, content="You don't have permission to use this command.", ephemeral=True)
+                return None
+            return member
+
+        @self.tree.command(name="join", description="Join your current voice channel (mods).")
+        async def join_slash(interaction: discord.Interaction) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            if member.voice is None or member.voice.channel is None:
+                await _respond(interaction, content="You're not in a voice channel!", ephemeral=True)
+                return
+
+            channel = member.voice.channel
+            try:
+                outcome = await self.deps.voice_service.join(interaction.guild, channel)
+            except discord.Forbidden:
+                await _respond(
+                    interaction,
+                    content="I don't have permission to join that voice channel (View/Connect).",
+                    ephemeral=True,
+                )
+                return
+            except Exception as exc:
+                await _respond(interaction, content=f"Failed to join VC: {type(exc).__name__}: {exc}", ephemeral=True)
+                raise
+
+            if outcome.result == JoinResult.ALREADY_IN_CHANNEL:
+                await _respond(interaction, content=f"I'm already in {outcome.channel_name}.")
+                return
+            if outcome.result == JoinResult.MOVED:
+                await _respond(interaction, content=f"Moved to {outcome.channel_name}!")
+                return
+
+            await _respond(interaction, content=f"Joined {outcome.channel_name}!")
+
+        @self.tree.command(name="leave", description="Leave the voice channel and reset session (mods).")
+        async def leave_slash(interaction: discord.Interaction) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            session.reset()
+            await self.deps.voice_service.leave(interaction.guild)
+            await self.deps.queue_repo.clear(guild_id=interaction.guild.id)
+
+            channel_id = interaction.channel_id
+            if channel_id is not None:
+                await self.deps.submission_repo.clear_for_channel(
+                    guild_id=interaction.guild.id,
+                    channel_id=channel_id,
+                )
+
+            await _respond(interaction, content="Left the voice channel. Session reset.")
+
+        @self.tree.command(name="queue", description="Show current queue and session status.")
+        async def queue_slash(interaction: discord.Interaction) -> None:
+            member = _require_member(interaction)
+            if member is None:
+                await _respond(interaction, content="This command can only be used in a server.", ephemeral=True)
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            lines: list[str] = []
+            if session.submissions_open:
+                lines.append("Session is open.")
+                if _is_mod(member):
+                    lines.append("Add a Suno URL to queue a song, or use /playlist.")
+                else:
+                    lines.append("Add a Suno URL to queue a song.")
+            else:
+                lines.append("Session is closed.")
+
+            if session.queue:
+                total = len(session.queue)
+                if total == 1:
+                    lines.append("Last song")
+                elif total > 5:
+                    lines.append(f"Next 5 out of {total}")
+                else:
+                    lines.append(f"Next {total}")
+                for idx, track in enumerate(session.queue[:5], start=1):
+                    lines.append(f"{idx}. {track.title} (requested by {track.requester_name})")
+            else:
+                lines.append("Queue is empty.")
+
+            await _respond(interaction, content="\n".join(lines))
+
+        @self.tree.command(name="nowplaying", description="Show now playing information.")
+        async def now_playing_slash(interaction: discord.Interaction) -> None:
+            member = _require_member(interaction)
+            if member is None:
+                await _respond(interaction, content="This command can only be used in a server.", ephemeral=True)
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            if session.now_playing is None:
+                await _respond(interaction, content="Nothing is playing.")
+                return
+
+            embed = build_now_playing_embed(
+                session.now_playing,
+                started_at=session.now_playing_started_at,
+            )
+            await _respond(interaction, embed=embed)
+
+        @self.tree.command(name="play", description="Start playback of the current queue.")
+        async def play_slash(interaction: discord.Interaction) -> None:
+            member = _require_member(interaction)
+            if member is None:
+                await _respond(interaction, content="This command can only be used in a server.", ephemeral=True)
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            session.now_playing_channel_id = interaction.channel_id
+            if session.now_playing is not None:
+                await _respond(interaction, content=f"Already playing: {session.now_playing.title}. Use /skip.")
+                return
+
+            if not session.queue:
+                if _is_mod(member):
+                    await _respond(interaction, content="Queue is empty. Drop a Suno URL or use /playlist.")
+                else:
+                    await _respond(interaction, content="Queue is empty. Drop a Suno URL.")
+                return
+
+            started = await self.deps.voice_service.play_next(interaction.guild)
+            if started is None:
+                await _respond(interaction, content="Could not start playback. Ensure the bot is connected to voice.")
+                return
+
+            session.now_playing_channel_id = interaction.channel_id
+            await _respond(
+                interaction,
+                embed=build_now_playing_embed(
+                    started,
+                    started_at=session.now_playing_started_at,
+                ),
+            )
+
+        @self.tree.command(name="skip", description="Skip the current track (mods).")
+        async def skip_slash(interaction: discord.Interaction) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            if interaction.guild.voice_client is None:
+                await _respond(interaction, content="I'm not connected to a voice channel.", ephemeral=True)
+                return
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            started = await self.deps.voice_service.skip(interaction.guild)
+            if started is None:
+                await _respond(interaction, content="Skipped. Queue is now empty; playback stopped.")
+                return
+
+            session.now_playing_channel_id = interaction.channel_id
+            await _respond(
+                interaction,
+                content="Skipped.",
+                embed=build_now_playing_embed(
+                    started,
+                    started_at=session.now_playing_started_at,
+                ),
+            )
+
+        @self.tree.command(name="stop", description="Stop playback (mods).")
+        async def stop_slash(interaction: discord.Interaction) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            if interaction.guild.voice_client is None:
+                await _respond(interaction, content="I'm not connected to a voice channel.", ephemeral=True)
+                return
+
+            await self.deps.voice_service.stop(interaction.guild)
+            await _respond(interaction, content="Playback stopped.")
+
+        @self.tree.command(name="playlist", description="Queue a Suno playlist URL (mods).")
+        @app_commands.describe(url="Suno playlist URL")
+        async def playlist_slash(interaction: discord.Interaction, url: str) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            if interaction.guild.voice_client is None:
+                await _respond(interaction, content="Use /join first.", ephemeral=True)
+                return
+            if "https://suno.com/playlist/" not in url:
+                await _respond(
+                    interaction,
+                    content="Please provide a Suno playlist URL like https://suno.com/playlist/....",
+                    ephemeral=True,
+                )
+                return
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            session.now_playing_channel_id = interaction.channel_id
+
+            await _respond(interaction, content="Fetching playlist and queuing tracks...")
+
+            try:
+                playlist_data = await self.deps.playlist_client.fetch_playlist(url)
+            except SunoScrapeError as exc:
+                await interaction.followup.send(f"Failed to fetch playlist: {exc}")
+                return
+
+            if not playlist_data.items:
+                await interaction.followup.send("No songs were found in that playlist.")
+                return
+
+            user_id = member.id
+            for item in playlist_data.items:
+                track_title = item.suno_track_url or item.mp3_url
+                audio_url = item.mp3_url
+                page_url = item.suno_track_url
+                artist_display = None
+                media_url = None
+                opus_url = None
+                track_id: UUID | None = None
+
+                ingest_url = item.suno_track_url or item.mp3_url
+                if ingest_url is not None:
+                    try:
+                        ingest_result = await self.deps.ingest_use_case.execute(
+                            IngestSunoLinkInput(
+                                guild_id=interaction.guild.id,
+                                channel_id=interaction.channel_id or 0,
+                                message_id=0,
+                                author_id=member.id,
+                                suno_url=ingest_url,
+                            )
+                        )
+                    except SunoScrapeError as exc:
+                        logging.warning("Failed to ingest Suno URL %s: %s", ingest_url, exc)
+                    else:
+                        if ingest_result.track_title:
+                            track_title = ingest_result.track_title
+                        if ingest_result.mp3_url:
+                            audio_url = ingest_result.mp3_url
+                        page_url = ingest_result.suno_url
+                        artist_display = ingest_result.artist_display
+                        media_url = ingest_result.media_url
+                        opus_url = self._build_opus_url(ingest_result.track_id)
+                        track_id = ingest_result.track_id
+
+                track = Track(
+                    audio_url=audio_url,
+                    opus_url=opus_url,
+                    page_url=page_url,
+                    title=track_title,
+                    artist_display=artist_display,
+                    media_url=media_url,
+                    requester_id=member.id,
+                    requester_name=member.display_name,
+                )
+                session.queue.append(track)
+                session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
+                if track_id is not None:
+                    asyncio.create_task(self._prefetch_opus(track_id))
+
+            session.submissions_open = False
+            await interaction.followup.send(
+                f"Queued {len(playlist_data.items)} track(s) from the playlist. Submissions are now closed."
+            )
+
+        admin_group = app_commands.Group(
+            name="admin",
+            description="Admin and DJ controls for session management.",
+        )
+
+        @admin_group.command(name="submissions", description="Open or close submissions (mods).")
+        @app_commands.describe(state="Open or close submissions")
+        @app_commands.choices(
+            state=[
+                app_commands.Choice(name="open", value="open"),
+                app_commands.Choice(name="close", value="close"),
+            ]
+        )
+        async def admin_submissions(interaction: discord.Interaction, state: app_commands.Choice[str]) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            if state.value == "open":
+                session.submissions_open = True
+                session.reset_submission_counts()
+                await _respond(interaction, content="Submissions are open.")
+                return
+
+            session.submissions_open = False
+            await _respond(interaction, content="Submissions are closed.")
+
+        @admin_group.command(name="limit", description="Set per-user submission limit (mods).")
+        async def admin_limit(interaction: discord.Interaction, count: app_commands.Range[int, 1, 100]) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            session.per_user_limit = count
+            await _respond(interaction, content=f"Per-user submission limit set to {count}.")
+
+        @admin_group.command(name="autoplay", description="Configure autoplay mode (mods).")
+        @app_commands.describe(
+            mode="off, until queue empty, or for a specific number of tracks",
+            count="Required only when mode is count",
+        )
+        @app_commands.choices(
+            mode=[
+                app_commands.Choice(name="until_empty", value="until_empty"),
+                app_commands.Choice(name="count", value="count"),
+                app_commands.Choice(name="off", value="off"),
+            ]
+        )
+        async def admin_autoplay(
+            interaction: discord.Interaction,
+            mode: app_commands.Choice[str],
+            count: app_commands.Range[int, 1, 100] | None = None,
+        ) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            session.now_playing_channel_id = interaction.channel_id
+
+            if mode.value == "off":
+                session.disable_autoplay()
+                await _respond(interaction, content="Autoplay disabled.")
+                return
+            if mode.value == "until_empty":
+                session.set_autoplay(None)
+                await _respond(interaction, content="Autoplay enabled until queue is empty.")
+                return
+            if count is None:
+                await _respond(interaction, content="Count is required when mode is 'count'.", ephemeral=True)
+                return
+
+            session.set_autoplay(count)
+            await _respond(interaction, content=f"Autoplay enabled for the next {count} track(s).")
+
+        @admin_group.command(name="dj", description="Configure DJ mode (mods).")
+        @app_commands.describe(
+            mode="off, until queue empty, or for a specific number of tracks",
+            count="Required only when mode is count",
+        )
+        @app_commands.choices(
+            mode=[
+                app_commands.Choice(name="until_empty", value="until_empty"),
+                app_commands.Choice(name="count", value="count"),
+                app_commands.Choice(name="off", value="off"),
+            ]
+        )
+        async def admin_dj(
+            interaction: discord.Interaction,
+            mode: app_commands.Choice[str],
+            count: app_commands.Range[int, 1, 100] | None = None,
+        ) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            session.now_playing_channel_id = interaction.channel_id
+
+            if mode.value == "off":
+                session.disable_dj()
+                await _respond(interaction, content="DJ mode disabled.")
+                return
+            if mode.value == "until_empty":
+                session.set_dj(None)
+                await _respond(interaction, content="DJ mode enabled until queue is empty.")
+                return
+            if count is None:
+                await _respond(interaction, content="Count is required when mode is 'count'.", ephemeral=True)
+                return
+
+            session.set_dj(count)
+            await _respond(interaction, content=f"DJ mode enabled for the next {count} track(s).")
+
+        @admin_group.command(name="clear", description="Clear queue (mods).")
+        async def admin_clear(interaction: discord.Interaction) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            session.queue.clear()
+            await _respond(interaction, content="Queue cleared.")
+
+        @admin_group.command(name="remove", description="Remove queue item by position (mods).")
+        async def admin_remove(interaction: discord.Interaction, index: app_commands.Range[int, 1, 100]) -> None:
+            member = await _ensure_mod(interaction)
+            if member is None:
+                return
+            assert interaction.guild is not None
+
+            session = self.deps.session_manager.for_guild(interaction.guild.id)
+            if index > len(session.queue):
+                await _respond(interaction, content="Invalid queue index.", ephemeral=True)
+                return
+
+            track = session.queue.pop(index - 1)
+            await _respond(interaction, content=f"Removed: {track.title} (requested by {track.requester_name}).")
+
+        self.tree.add_command(admin_group)
+
     def _register_commands(self) -> None:
         @self.command(name="help")
         async def help_command(ctx: commands.Context) -> None:
@@ -730,7 +1373,10 @@ class JukeBot(commands.Bot):
                 await ctx.send("Nothing is playing.")
                 return
 
-            embed = build_now_playing_embed(session.now_playing)
+            embed = build_now_playing_embed(
+                session.now_playing,
+                started_at=session.now_playing_started_at,
+            )
             await ctx.send(embed=embed)
 
         @self.command(name="p")
@@ -754,18 +1400,24 @@ class JukeBot(commands.Bot):
                     await ctx.send("Queue is empty. Drop a Suno URL.")
                 return
 
-            started = await self._get_voice(ctx).play_next(ctx.guild)
+            try:
+                started = await self._get_voice(ctx).play_next(ctx.guild)
+            except RuntimeError as exc:
+                await ctx.send(
+                    "Could not start playback because the voice session was not established. "
+                    "Try `;leave`, then `;join`, then `;p` again."
+                )
+                logging.warning("Play command failed due to voice connection state: %s", exc)
+                return
             if started is None:
-                if isinstance(ctx.author, discord.Member) and _is_mod(ctx.author):
-                    await ctx.send(
-                        "Queue is empty. Drop a Suno URL or use ;playlist <Suno Playlist URL>."
-                    )
-                else:
-                    await ctx.send("Queue is empty. Drop a Suno URL.")
+                await ctx.send("Could not start playback for the next track. Use `;q` to verify queue state.")
                 return
 
             session.now_playing_channel_id = ctx.channel.id
-            embed = build_now_playing_embed(started)
+            embed = build_now_playing_embed(
+                started,
+                started_at=session.now_playing_started_at,
+            )
             await ctx.send(embed=embed)
 
         @self.command(name="n")
@@ -789,7 +1441,10 @@ class JukeBot(commands.Bot):
                 return
 
             session.now_playing_channel_id = ctx.channel.id
-            embed = build_now_playing_embed(started)
+            embed = build_now_playing_embed(
+                started,
+                started_at=session.now_playing_started_at,
+            )
             await ctx.send(content="Skipped.", embed=embed)
 
         @self.command(name="s")
@@ -983,43 +1638,25 @@ def build_bot() -> JukeBot:
     session_manager = SessionManager()
     audio_manager = AudioControllerManager(backend_name=settings.voice_backend)
 
-    lavalink_client: lavalink.Client | None = None
-    if settings.is_lavalink_backend:
-        assert settings.lavalink_host is not None
-        assert settings.lavalink_password is not None
-        lavalink_client = lavalink.Client(0)
-        LavalinkPlaybackBackend.configure_client(lavalink_client)
-        lavalink_client.add_node(
-            host=settings.lavalink_host,
-            port=settings.lavalink_port,
-            password=settings.lavalink_password,
-            region="us",
-            name="jukebotx-main",
-            ssl=settings.lavalink_secure,
-            resume_key=settings.lavalink_session_id,
-            resume_timeout=settings.lavalink_resume_timeout_seconds,
-        )
-
-    else:
-        LavalinkPlaybackBackend.configure_client(None)
-
+    track_repo = PostgresTrackRepository(async_session_factory)
     deps = BotDeps(
         session_manager=session_manager,
         audio_manager=audio_manager,
         ingest_use_case=IngestSunoLink(
             suno_client=HttpxSunoClient(),
-            track_repo=PostgresTrackRepository(async_session_factory),
+            track_repo=track_repo,
             submission_repo=PostgresSubmissionRepository(async_session_factory),
             queue_repo=PostgresQueueRepository(async_session_factory),
         ),
         playlist_client=HttpxSunoPlaylistClient(),
         submission_repo=PostgresSubmissionRepository(async_session_factory),
         queue_repo=PostgresQueueRepository(async_session_factory),
+        track_repo=track_repo,
         voice_service=VoiceOrchestrationService(
             session_manager=session_manager,
             audio_manager=audio_manager,
         ),
-        lavalink_client=lavalink_client,
+        lavalink_client=None,
     )
 
     return JukeBot(

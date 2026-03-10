@@ -95,9 +95,16 @@ class OpusStorageService:
         )
 
     def upload_file(self, *, local_path: Path, object_key: str) -> None:
+        self.upload_media_file(
+            local_path=local_path,
+            object_key=object_key,
+            content_type="audio/opus",
+        )
+
+    def upload_media_file(self, *, local_path: Path, object_key: str, content_type: str) -> None:
         if self._client is None:
             raise RuntimeError("Storage client not configured")
-        extra_args: dict[str, str] = {"ContentType": "audio/opus"}
+        extra_args: dict[str, str] = {"ContentType": content_type}
         if self._config.ttl_seconds > 0:
             extra_args["Expires"] = (
                 datetime.now(timezone.utc) + timedelta(seconds=self._config.ttl_seconds)

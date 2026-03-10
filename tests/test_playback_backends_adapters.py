@@ -83,9 +83,15 @@ async def test_discord_ffmpeg_backend_registers_and_dispatches_track_end_hook(mo
 class FakeLavalinkPlayer:
     def __init__(self, guild_id: int) -> None:
         self.guild_id = guild_id
-        self.is_connected = True
+        self.channel_id = None
         self.playing = False
         self.current = None
+        self._voice_state = {}
+        self.node = FakeNode()
+
+    @property
+    def is_connected(self) -> bool:
+        return self.channel_id is not None
 
     async def play(self, track: object) -> None:
         self.current = track
@@ -109,6 +115,14 @@ class FakePlayerManager:
 
     async def destroy(self, guild_id: int) -> None:
         self.players.pop(guild_id, None)
+
+
+class FakeNode:
+    def __init__(self) -> None:
+        self.voice_updates: list[tuple[int, dict[str, str]]] = []
+
+    async def update_player(self, *, guild_id: int, voice_state: dict[str, str]) -> None:
+        self.voice_updates.append((guild_id, voice_state))
 
 
 class FakeLavalinkClient:
@@ -139,6 +153,9 @@ class FakeDiscordVoiceClient:
         self.guild = guild
         self.channel = channel
         self.disconnected = False
+        self.session_id = "discord-session"
+        self.endpoint = "voice.example.test"
+        self.token = "voice-token"
 
     async def move_to(self, channel: FakeChannel) -> None:
         self.channel = channel
@@ -147,6 +164,10 @@ class FakeDiscordVoiceClient:
         assert force is True
         self.disconnected = True
         self.guild.voice_client = None
+
+
+class FakeLegacyVoiceClient(FakeDiscordVoiceClient):
+    pass
 
 
 @pytest.mark.asyncio
@@ -159,7 +180,8 @@ async def test_lavalink_backend_uses_lavalink_player_and_dispatches_end_hooks() 
     guild = FakeGuild()
     channel = FakeChannel(guild)
 
-    async def connect():
+    async def connect(*, cls=None):
+        assert cls is not None
         vc = FakeDiscordVoiceClient(guild, channel)
         guild.voice_client = vc
         return vc
@@ -198,6 +220,69 @@ async def test_lavalink_backend_uses_lavalink_player_and_dispatches_end_hooks() 
     await backend.disconnect(voice_client)
     assert voice_client.disconnected is True
     assert client.player_manager.get(88) is None
+
+
+@pytest.mark.asyncio
+async def test_lavalink_backend_marks_player_connected_after_manual_voice_dispatch() -> None:
+    LavalinkPlaybackBackend._backends_by_guild.clear()
+    client = FakeLavalinkClient()
+    LavalinkPlaybackBackend.configure_client(client)
+
+    backend = LavalinkPlaybackBackend(guild_id=144)
+    guild = FakeGuild()
+    channel = FakeChannel(guild)
+    voice_client = FakeDiscordVoiceClient(guild, channel)
+    player = await backend._get_or_create_player()
+
+    assert player.is_connected is False
+
+    await backend._dispatch_voice_state_from_voice_client(player, voice_client, channel.id)
+
+    assert player.is_connected is True
+    assert player.channel_id == channel.id
+    assert player._voice_state == {
+        "sessionId": "discord-session",
+        "channelId": str(channel.id),
+        "endpoint": "voice.example.test",
+        "token": "voice-token",
+    }
+    assert player.node.voice_updates == [
+        (
+            144,
+            {
+                "sessionId": "discord-session",
+                "channelId": str(channel.id),
+                "endpoint": "voice.example.test",
+                "token": "voice-token",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_lavalink_backend_drops_stale_non_lavalink_voice_client_before_connecting() -> None:
+    LavalinkPlaybackBackend._backends_by_guild.clear()
+    client = FakeLavalinkClient()
+    LavalinkPlaybackBackend.configure_client(client)
+
+    backend = LavalinkPlaybackBackend(guild_id=177)
+    guild = FakeGuild()
+    channel = FakeChannel(guild)
+    stale_voice_client = FakeLegacyVoiceClient(guild, channel)
+    guild.voice_client = stale_voice_client
+
+    async def connect(*, cls=None):
+        assert cls is not None
+        vc = FakeDiscordVoiceClient(guild, channel)
+        guild.voice_client = vc
+        return vc
+
+    channel.connect = connect
+
+    voice_client = await backend.connect(channel)
+
+    assert stale_voice_client.disconnected is True
+    assert voice_client is guild.voice_client
 
 
 def test_discord_ffmpeg_backend_rejects_non_audio_page_url() -> None:

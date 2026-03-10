@@ -21,6 +21,18 @@ class WorkerSettings:
     opus_storage_public_base_url: str
     opus_storage_signed_url_ttl_seconds: int
     opus_storage_ttl_seconds: int
+    media_backfill_enabled: bool
+    media_backfill_poll_seconds: float
+    media_backfill_min_track_age_seconds: int
+    media_backfill_browser_timeout_seconds: float
+    media_backfill_user_agent: str
+    media_gif_enabled: bool
+    media_gif_poll_seconds: float
+    media_gif_min_track_age_seconds: int
+    media_gif_ffmpeg_path: str
+    media_gif_fps: int
+    media_gif_width: int
+    media_gif_storage_prefix: str
 
 
 def load_worker_settings() -> WorkerSettings:
@@ -42,4 +54,21 @@ def load_worker_settings() -> WorkerSettings:
             os.environ.get("OPUS_STORAGE_SIGNED_URL_TTL_SECONDS", "900")
         ),
         opus_storage_ttl_seconds=int(os.environ.get("OPUS_STORAGE_TTL_SECONDS", "604800")),
+        media_backfill_enabled=os.environ.get("MEDIA_BACKFILL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+        media_backfill_poll_seconds=float(os.environ.get("MEDIA_BACKFILL_POLL_SECONDS", "30")),
+        media_backfill_min_track_age_seconds=int(os.environ.get("MEDIA_BACKFILL_MIN_TRACK_AGE_SECONDS", "600")),
+        media_backfill_browser_timeout_seconds=float(
+            os.environ.get("MEDIA_BACKFILL_BROWSER_TIMEOUT_SECONDS", "25")
+        ),
+        media_backfill_user_agent=os.environ.get(
+            "MEDIA_BACKFILL_USER_AGENT",
+            "jukebotx-media-worker/1.0",
+        ),
+        media_gif_enabled=os.environ.get("MEDIA_GIF_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
+        media_gif_poll_seconds=float(os.environ.get("MEDIA_GIF_POLL_SECONDS", "45")),
+        media_gif_min_track_age_seconds=int(os.environ.get("MEDIA_GIF_MIN_TRACK_AGE_SECONDS", "600")),
+        media_gif_ffmpeg_path=os.environ.get("MEDIA_GIF_FFMPEG_PATH", os.environ.get("OPUS_FFMPEG_PATH", "ffmpeg")),
+        media_gif_fps=int(os.environ.get("MEDIA_GIF_FPS", "10")),
+        media_gif_width=int(os.environ.get("MEDIA_GIF_WIDTH", "512")),
+        media_gif_storage_prefix=os.environ.get("MEDIA_GIF_STORAGE_PREFIX", "media/gif"),
     )

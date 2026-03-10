@@ -45,17 +45,21 @@ class GuildAudioController:
             if track is None:
                 return None
 
-            await self._wait_for_opus_ready(track)
-            playback_url = await self._resolve_playback_url(track)
-            track.duration_seconds = await self._probe_duration_seconds(playback_url)
-
             try:
+                if not self._backend.prefer_source_audio_url():
+                    await self._wait_for_opus_ready(track)
+                playback_url = await self._resolve_playback_url(track)
                 source = await self._backend.play_track(voice_client, playback_url)
             except ValueError as exc:
                 logger.error("Refusing to play invalid audio URL for guild %s: %s", self.guild_id, exc)
-                self.session.stop_playback()
+                self.session.rollback_started_track(track)
                 return None
+            except Exception:
+                self.session.rollback_started_track(track)
+                raise
             self._current_source = source
+            if track.duration_seconds is None:
+                asyncio.create_task(self._backfill_track_duration(track, playback_url))
             return track
 
     async def connect(self, channel: discord.VocalGuildChannel) -> discord.VoiceClient:
@@ -99,7 +103,11 @@ class GuildAudioController:
                 self.session.dj_enabled,
                 len(self.session.queue),
             )
-            started = await self.play_next(voice_client)
+            try:
+                started = await self.play_next(voice_client)
+            except Exception as exc:
+                logger.warning("Autoplay failed in guild %s: %s", self.guild_id, exc)
+                return
             if started is not None:
                 await self._announce_now_playing(voice_client, started)
 
@@ -221,6 +229,11 @@ class GuildAudioController:
                 return None
 
         return await asyncio.to_thread(_run_probe)
+
+    async def _backfill_track_duration(self, track: Track, playback_url: str) -> None:
+        duration = await self._probe_duration_seconds(playback_url)
+        if duration is not None:
+            track.duration_seconds = duration
 
     def _log_track_end(self, error: Exception | None) -> None:
         current = self.session.now_playing

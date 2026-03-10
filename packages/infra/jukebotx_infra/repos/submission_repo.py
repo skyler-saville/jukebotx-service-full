@@ -73,6 +73,15 @@ class PostgresSubmissionRepository(SubmissionRepository):
             await session.refresh(created)
             return _to_domain(created)
 
+    async def list_for_track(self, *, track_id: UUID) -> list[Submission]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(SubmissionModel)
+                .where(SubmissionModel.track_id == track_id)
+                .order_by(SubmissionModel.submitted_at.asc())
+            )
+            return [_to_domain(row) for row in rows.all()]
+
     async def list_tracks_for_channel(
         self,
         *,

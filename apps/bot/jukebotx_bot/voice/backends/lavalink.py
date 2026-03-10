@@ -16,6 +16,87 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class LavalinkVoiceProtocol(discord.VoiceProtocol):
+    def __init__(self, client: discord.Client, channel: discord.abc.Connectable) -> None:
+        super().__init__(client, channel)
+        self.channel = channel
+        self.guild = channel.guild
+        self.session_id: str | None = None
+        self.endpoint: str | None = None
+        self.token: str | None = None
+        self._connected = False
+        self._voice_state_event = asyncio.Event()
+        self._voice_server_event = asyncio.Event()
+
+    async def on_voice_state_update(self, data: dict[str, Any], /) -> None:
+        channel_id = data.get("channel_id")
+        self.session_id = data.get("session_id")
+
+        if channel_id is None:
+            self._connected = False
+            self.channel = None
+            self.cleanup()
+            return
+
+        channel = self.guild.get_channel(int(channel_id))
+        if channel is not None:
+            self.channel = channel
+
+        self._connected = True
+        self._voice_state_event.set()
+
+    async def on_voice_server_update(self, data: dict[str, Any], /) -> None:
+        self.endpoint = data.get("endpoint")
+        self.token = data.get("token")
+        self._voice_server_event.set()
+
+    async def connect(
+        self,
+        *,
+        timeout: float,
+        reconnect: bool,
+        self_deaf: bool = False,
+        self_mute: bool = False,
+    ) -> None:
+        del reconnect
+        self._voice_state_event.clear()
+        self._voice_server_event.clear()
+        await self.guild.change_voice_state(
+            channel=self.channel,
+            self_deaf=self_deaf,
+            self_mute=self_mute,
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                self._voice_state_event.wait(),
+                self._voice_server_event.wait(),
+            ),
+            timeout=timeout,
+        )
+
+    async def move_to(self, channel: discord.VocalGuildChannel) -> None:
+        self.channel = channel
+        self._voice_state_event.clear()
+        self._voice_server_event.clear()
+        await self.guild.change_voice_state(channel=channel)
+        await asyncio.wait_for(
+            asyncio.gather(
+                self._voice_state_event.wait(),
+                self._voice_server_event.wait(),
+            ),
+            timeout=10.0,
+        )
+
+    async def disconnect(self, *, force: bool) -> None:
+        del force
+        self._connected = False
+        await self.guild.change_voice_state(channel=None)
+        self.cleanup()
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+
 class LavalinkPlaybackBackend(PlaybackBackend):
     _client: "lavalink.Client | None" = None
     _event_hook_registered = False
@@ -24,7 +105,7 @@ class LavalinkPlaybackBackend(PlaybackBackend):
     def __init__(self, guild_id: int) -> None:
         self.guild_id = guild_id
         self._track_end_hooks: list[TrackEndHook] = []
-        self._voice_client: discord.VoiceClient | None = None
+        self._voice_client: discord.VoiceProtocol | None = None
         self._voice_connect_lock = asyncio.Lock()
         type(self)._backends_by_guild[guild_id] = self
 
@@ -160,19 +241,21 @@ class LavalinkPlaybackBackend(PlaybackBackend):
             raise ValueError(f"No Lavalink tracks resolved for URL: {url}")
         return tracks[0]
 
-    async def connect(self, channel: discord.VocalGuildChannel) -> discord.VoiceClient:
+    async def connect(self, channel: discord.VocalGuildChannel) -> discord.VoiceProtocol:
         self._require_client()
         # Create the Lavalink player before joining voice so initial VOICE_* gateway
         # updates can be attached to an existing player.
         player = await self._get_or_create_player()
 
         voice_client = channel.guild.voice_client
+        if voice_client is not None and not isinstance(voice_client, LavalinkVoiceProtocol):
+            try:
+                await voice_client.disconnect(force=True)
+            finally:
+                voice_client = None
+
         if voice_client is None:
-            voice_client_cls = self._resolve_voice_client_cls()
-            if voice_client_cls is not None:
-                voice_client = await channel.connect(cls=voice_client_cls)
-            else:
-                voice_client = await channel.connect()
+            voice_client = await channel.connect(cls=LavalinkVoiceProtocol)
         elif voice_client.channel != channel:
             await voice_client.move_to(channel)
 
@@ -180,7 +263,7 @@ class LavalinkPlaybackBackend(PlaybackBackend):
         await self._dispatch_voice_state_from_voice_client(player, voice_client, channel.id)
         return voice_client
 
-    async def disconnect(self, voice_client: discord.VoiceClient) -> None:
+    async def disconnect(self, voice_client: discord.VoiceProtocol) -> None:
         client = self._require_client()
 
         player = self._get_existing_player()
@@ -195,7 +278,7 @@ class LavalinkPlaybackBackend(PlaybackBackend):
         self._voice_client = None
         await voice_client.disconnect(force=True)
 
-    async def play_track(self, voice_client: discord.VoiceClient, url: str) -> object:
+    async def play_track(self, voice_client: discord.VoiceProtocol, url: str) -> object:
         self._voice_client = voice_client
         player = await self._get_or_create_player()
         resolved_voice_client = await self._ensure_player_voice_connected(player, voice_client)
@@ -214,16 +297,16 @@ class LavalinkPlaybackBackend(PlaybackBackend):
             await self._maybe_await(player.set_volume(100))
         return track
 
-    async def stop(self, voice_client: discord.VoiceClient) -> None:
+    async def stop(self, voice_client: discord.VoiceProtocol) -> None:
         del voice_client
         player = self._get_existing_player()
         if player is not None and hasattr(player, "stop"):
             await self._maybe_await(player.stop())
 
-    async def skip(self, voice_client: discord.VoiceClient) -> None:
+    async def skip(self, voice_client: discord.VoiceProtocol) -> None:
         await self.stop(voice_client)
 
-    def is_playing(self, voice_client: discord.VoiceClient) -> bool:
+    def is_playing(self, voice_client: discord.VoiceProtocol) -> bool:
         del voice_client
 
         try:
@@ -251,7 +334,7 @@ class LavalinkPlaybackBackend(PlaybackBackend):
     async def _dispatch_voice_state_from_voice_client(
         self,
         player: Any,
-        voice_client: discord.VoiceClient,
+        voice_client: discord.VoiceProtocol,
         channel_id: int,
     ) -> None:
         voice_payload: dict[str, str] | None = None
@@ -282,12 +365,13 @@ class LavalinkPlaybackBackend(PlaybackBackend):
             return
 
         await self._maybe_await(node.update_player(guild_id=self.guild_id, voice_state=voice_payload))
+        self._sync_local_player_voice_state(player, voice_payload)
 
     async def _ensure_player_voice_connected(
         self,
         player: Any,
-        voice_client: discord.VoiceClient,
-    ) -> discord.VoiceClient:
+        voice_client: discord.VoiceProtocol,
+    ) -> discord.VoiceProtocol:
         if bool(getattr(player, "is_connected", False)):
             return voice_client
 
@@ -332,7 +416,7 @@ class LavalinkPlaybackBackend(PlaybackBackend):
                 "voice state dispatch did not establish a connection."
             )
 
-    def _coalesce_voice_client(self, fallback: discord.VoiceClient) -> discord.VoiceClient:
+    def _coalesce_voice_client(self, fallback: discord.VoiceProtocol) -> discord.VoiceProtocol:
         cached = self._voice_client
         if cached is not None:
             return cached
@@ -343,13 +427,15 @@ class LavalinkPlaybackBackend(PlaybackBackend):
         return fallback
 
     @staticmethod
-    def _resolve_voice_client_cls() -> type[discord.VoiceClient] | None:
-        try:
-            import lavalink as lavalink_module
-        except Exception:
-            return None
+    def _sync_local_player_voice_state(player: Any, voice_payload: dict[str, str]) -> None:
+        """Mirror manual REST voice updates into the local lavalink.py player state."""
+        channel_id = voice_payload.get("channelId")
+        if channel_id is not None and hasattr(player, "channel_id"):
+            try:
+                player.channel_id = int(channel_id)
+            except (TypeError, ValueError):
+                logger.warning("Invalid channelId in Lavalink voice payload: %r", channel_id)
 
-        voice_client_cls = getattr(lavalink_module, "LavalinkVoiceClient", None)
-        if voice_client_cls is None:
-            voice_client_cls = getattr(lavalink_module, "DiscordVoiceClient", None)
-        return voice_client_cls
+        local_voice_state = getattr(player, "_voice_state", None)
+        if isinstance(local_voice_state, dict):
+            local_voice_state.update(voice_payload)

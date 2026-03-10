@@ -136,6 +136,9 @@ class TrackRepository:
     ) -> Track:
         raise NotImplementedError
 
+    async def fetch_recent_gif_tracks(self, *, updated_since: datetime) -> list[Track]:
+        raise NotImplementedError
+
 
 class SubmissionRepository:
     async def get_first_submission_for_track_in_guild(self, *, guild_id: int, track_id: UUID) -> Submission | None:
@@ -145,6 +148,9 @@ class SubmissionRepository:
         raise NotImplementedError
 
     async def create(self, data: SubmissionCreate) -> Submission:
+        raise NotImplementedError
+
+    async def list_for_track(self, *, track_id: UUID) -> list[Submission]:
         raise NotImplementedError
 
 

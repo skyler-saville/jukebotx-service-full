@@ -22,22 +22,11 @@ def _clip(text: str, *, head: int = 400, tail: int = 200) -> tuple[str, str]:
     return text[:head], text[-tail:]
 
 
-async def main() -> None:
-    """
-    Smoke test for the Suno HTTP client.
-
-    Usage:
-        PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
-        poetry run python scripts/smoke_suno_client.py "https://suno.com/s/..."
-    """
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: poetry run python scripts/smoke_suno_client.py <suno_url>")
-
-    url = sys.argv[1]
-    client = HttpxSunoClient()
+async def _run_one(client: HttpxSunoClient, url: str) -> None:
     data = await client.fetch_track(url)
 
-    print("URL:", data.suno_url)
+    print("Input URL:", url)
+    print("Resolved URL:", data.suno_url)
     print("Title:", data.title)
     print("Artist:", data.artist_display)
     print("Artist Username:", data.artist_username)
@@ -67,6 +56,26 @@ async def main() -> None:
     # (helps catch regressions when Suno changes their markup).
     if len(data.lyrics) < 200:
         raise SystemExit("Suspiciously short lyrics extracted (<200 chars). Treat as failure.")
+
+
+async def main() -> None:
+    """
+    Smoke test for the Suno HTTP client.
+
+    Usage:
+        PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
+        poetry run python scripts/smoke_suno_client.py "https://suno.com/s/..."
+        poetry run python scripts/smoke_suno_client.py "https://suno.com/s/..." "https://suno.com/song/..."
+    """
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: poetry run python scripts/smoke_suno_client.py <suno_url> [more_urls...]")
+
+    urls = sys.argv[1:]
+    client = HttpxSunoClient()
+    for idx, url in enumerate(urls, start=1):
+        if len(urls) > 1:
+            print(f"\n=== Suno Smoke {idx}/{len(urls)} ===")
+        await _run_one(client, url)
 
 
 if __name__ == "__main__":
