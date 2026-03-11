@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JukeBotx Web</title>
+    <style>
+      :root {
+        --bg: #f4efe6;
+        --panel: rgba(255, 252, 247, 0.84);
+        --text: #1e1a17;
+        --muted: #6f6259;
+        --accent: #b84c32;
+        --accent-2: #204c5c;
+        --border: rgba(30, 26, 23, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(184, 76, 50, 0.16), transparent 28%),
+          radial-gradient(circle at bottom right, rgba(32, 76, 92, 0.18), transparent 24%),
+          linear-gradient(135deg, #efe5d8, #f8f4ee 58%, #ece6de);
+        min-height: 100vh;
+      }
+
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 48px 20px 72px;
+      }
+
+      .hero,
+      .panel {
+        backdrop-filter: blur(12px);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        box-shadow: 0 20px 60px rgba(43, 34, 27, 0.08);
+      }
+
+      .hero {
+        padding: 28px;
+        margin-bottom: 24px;
+      }
+
+      h1,
+      h2 {
+        margin: 0 0 12px;
+        font-weight: 600;
+      }
+
+      p {
+        line-height: 1.5;
+      }
+
+      .eyebrow {
+        display: inline-block;
+        margin-bottom: 16px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(184, 76, 50, 0.1);
+        color: var(--accent);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.3fr 0.9fr;
+        gap: 24px;
+      }
+
+      .panel {
+        padding: 24px;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, monospace;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #c27e3a;
+      }
+
+      .dot.ok {
+        background: #4d8b55;
+      }
+
+      .dot.bad {
+        background: #a3392c;
+      }
+
+      .actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 18px;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: white;
+      }
+
+      button.secondary {
+        background: rgba(32, 76, 92, 0.12);
+        color: var(--accent-2);
+      }
+
+      .log {
+        margin-top: 18px;
+        padding: 16px;
+        border-radius: 16px;
+        background: rgba(30, 26, 23, 0.04);
+        color: var(--muted);
+        min-height: 72px;
+        white-space: pre-wrap;
+      }
+
+      .field {
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      input {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.8);
+        font: inherit;
+      }
+
+      audio {
+        width: 100%;
+        margin-top: 18px;
+      }
+
+      @media (max-width: 760px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="eyebrow">Web Audio Preview</div>
+        <h1>JukeBotx browser playback scaffold</h1>
+        <p>
+          This container is a thin web shell in front of the FastAPI service. It proxies
+          <code>/api/*</code> to the internal API container and also exposes the tunnel-backed
+          public base URLs from <code>.env</code> so future frontend code can build shareable links
+          without hardcoding Docker hostnames.
+        </p>
+        <div class="status">
+          <span id="health-dot" class="dot"></span>
+          <span id="health-text">Checking API health…</span>
+        </div>
+        <div class="actions">
+          <button id="health-btn" class="secondary" type="button">Recheck API</button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Track Probe</h2>
+          <p>Paste a track UUID to probe the new browser-oriented audio endpoint.</p>
+          <label class="field">
+            <span>Track ID</span>
+            <input id="track-id" type="text" placeholder="00000000-0000-0000-0000-000000000000">
+          </label>
+          <div class="actions">
+            <button id="status-btn" class="primary" type="button">Check web-audio status</button>
+            <button id="play-btn" class="secondary" type="button">Load player</button>
+          </div>
+          <audio id="player" controls preload="none"></audio>
+          <div id="probe-log" class="log">No track probed yet.</div>
+        </article>
+
+        <aside class="panel">
+          <h2>Route shape</h2>
+          <p>The web container expects the API to provide:</p>
+          <pre>/api/tracks/{track_id}/web-audio
+/api/tracks/{track_id}/web-audio/status</pre>
+          <div id="config-log" class="log">Loading web runtime config…</div>
+        </aside>
+      </section>
+    </main>
+
+    <script>
+      async function fetchJson(url) {
+        const response = await fetch(url, { credentials: "include" });
+        const text = await response.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = { raw: text };
+        }
+        return { ok: response.ok, status: response.status, data };
+      }
+
+      async function checkHealth() {
+        const dot = document.getElementById("health-dot");
+        const label = document.getElementById("health-text");
+        dot.className = "dot";
+        label.textContent = "Checking API health…";
+        try {
+          const result = await fetchJson("/api/healthz");
+          dot.className = result.ok ? "dot ok" : "dot bad";
+          label.textContent = result.ok
+            ? "API reachable through web proxy"
+            : `API returned ${result.status}`;
+        } catch (error) {
+          dot.className = "dot bad";
+          label.textContent = `API unavailable: ${error}`;
+        }
+      }
+
+      async function loadConfig() {
+        const log = document.getElementById("config-log");
+        try {
+          const result = await fetchJson("/config.json");
+          log.textContent = JSON.stringify(result.data, null, 2);
+        } catch (error) {
+          log.textContent = `Config load failed: ${error}`;
+        }
+      }
+
+      async function probeStatus() {
+        const trackId = document.getElementById("track-id").value.trim();
+        const log = document.getElementById("probe-log");
+        if (!trackId) {
+          log.textContent = "Enter a track UUID first.";
+          return;
+        }
+        log.textContent = "Checking web-audio status…";
+        try {
+          const result = await fetchJson(`/api/tracks/${trackId}/web-audio/status`);
+          log.textContent = JSON.stringify(result, null, 2);
+        } catch (error) {
+          log.textContent = `Status check failed: ${error}`;
+        }
+      }
+
+      function loadPlayer() {
+        const trackId = document.getElementById("track-id").value.trim();
+        const log = document.getElementById("probe-log");
+        const player = document.getElementById("player");
+        if (!trackId) {
+          log.textContent = "Enter a track UUID first.";
+          return;
+        }
+        player.src = `/api/tracks/${trackId}/web-audio`;
+        log.textContent = `Player source set to /api/tracks/${trackId}/web-audio`;
+      }
+
+      document.getElementById("health-btn").addEventListener("click", checkHealth);
+      document.getElementById("status-btn").addEventListener("click", probeStatus);
+      document.getElementById("play-btn").addEventListener("click", loadPlayer);
+      loadConfig();
+      checkHealth();
+    </script>
+  </body>
+</html>

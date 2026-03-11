@@ -17,9 +17,26 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     env_file: .env
+    ports:
+      - "${API_PORT:-8000}:8000"
     depends_on:
       - db
       - minio
+
+  web:
+    env_file: .env
+    environment:
+      ENV: ${ENV:-development}
+      WEB_API_UPSTREAM: http://api:8000
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-}
+      PUBLIC_FRONTEND_URL: ${PUBLIC_FRONTEND_URL:-}
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
 
   worker:
     environment:
