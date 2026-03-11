@@ -26,6 +26,10 @@ class Track:
     opus_transcoded_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    web_audio_url: str | None = None
+    web_audio_path: str | None = None
+    web_audio_status: str | None = None
+    web_audio_transcoded_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,10 @@ class TrackUpsert:
     opus_path: str | None = None
     opus_status: str | None = None
     opus_transcoded_at: datetime | None = None
+    web_audio_url: str | None = None
+    web_audio_path: str | None = None
+    web_audio_status: str | None = None
+    web_audio_transcoded_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +141,17 @@ class TrackRepository:
         opus_path: str | None,
         opus_status: str | None,
         opus_transcoded_at: datetime | None,
+    ) -> Track:
+        raise NotImplementedError
+
+    async def update_web_audio_metadata(
+        self,
+        *,
+        track_id: UUID,
+        web_audio_url: str | None,
+        web_audio_path: str | None,
+        web_audio_status: str | None,
+        web_audio_transcoded_at: datetime | None,
     ) -> Track:
         raise NotImplementedError
 

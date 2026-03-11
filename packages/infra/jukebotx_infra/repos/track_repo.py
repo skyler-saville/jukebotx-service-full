@@ -33,6 +33,10 @@ def _to_domain(track: TrackModel) -> Track:
         opus_transcoded_at=track.opus_transcoded_at,
         created_at=track.created_at,
         updated_at=track.updated_at,
+        web_audio_url=track.web_audio_url,
+        web_audio_path=track.web_audio_path,
+        web_audio_status=track.web_audio_status,
+        web_audio_transcoded_at=track.web_audio_transcoded_at,
     )
 
 
@@ -67,6 +71,12 @@ class PostgresTrackRepository(TrackRepository):
                 existing.opus_path = data.opus_path or existing.opus_path
                 existing.opus_status = data.opus_status or existing.opus_status
                 existing.opus_transcoded_at = data.opus_transcoded_at or existing.opus_transcoded_at
+                existing.web_audio_url = data.web_audio_url or existing.web_audio_url
+                existing.web_audio_path = data.web_audio_path or existing.web_audio_path
+                existing.web_audio_status = data.web_audio_status or existing.web_audio_status
+                existing.web_audio_transcoded_at = (
+                    data.web_audio_transcoded_at or existing.web_audio_transcoded_at
+                )
                 existing.updated_at = now
                 await session.commit()
                 await session.refresh(existing)
@@ -85,6 +95,10 @@ class PostgresTrackRepository(TrackRepository):
                 opus_path=data.opus_path,
                 opus_status=data.opus_status,
                 opus_transcoded_at=data.opus_transcoded_at,
+                web_audio_url=data.web_audio_url,
+                web_audio_path=data.web_audio_path,
+                web_audio_status=data.web_audio_status,
+                web_audio_transcoded_at=data.web_audio_transcoded_at,
                 created_at=now,
                 updated_at=now,
             )
@@ -110,6 +124,28 @@ class PostgresTrackRepository(TrackRepository):
             result.opus_path = opus_path
             result.opus_status = opus_status
             result.opus_transcoded_at = opus_transcoded_at
+            result.updated_at = _now()
+            await session.commit()
+            await session.refresh(result)
+            return _to_domain(result)
+
+    async def update_web_audio_metadata(
+        self,
+        *,
+        track_id: UUID,
+        web_audio_url: str | None,
+        web_audio_path: str | None,
+        web_audio_status: str | None,
+        web_audio_transcoded_at: datetime | None,
+    ) -> Track:
+        async with self._session_factory() as session:
+            result = await session.get(TrackModel, track_id)
+            if result is None:
+                raise KeyError(f"Track not found: {track_id}")
+            result.web_audio_url = web_audio_url
+            result.web_audio_path = web_audio_path
+            result.web_audio_status = web_audio_status
+            result.web_audio_transcoded_at = web_audio_transcoded_at
             result.updated_at = _now()
             await session.commit()
             await session.refresh(result)

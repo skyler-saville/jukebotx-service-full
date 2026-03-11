@@ -30,6 +30,10 @@ class TrackModel(Base):
     opus_path: Mapped[str | None] = mapped_column(String(1024))
     opus_status: Mapped[str | None] = mapped_column(String(32))
     opus_transcoded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    web_audio_url: Mapped[str | None] = mapped_column(String(1024))
+    web_audio_path: Mapped[str | None] = mapped_column(String(1024))
+    web_audio_status: Mapped[str | None] = mapped_column(String(32))
+    web_audio_transcoded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

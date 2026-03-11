@@ -17,6 +17,10 @@ class OpusCacheService:
     def cache_path(self, *, track_id: UUID) -> Path:
         return self._cache_dir / f"{track_id}.opus"
 
+    def cache_path_with_extension(self, *, track_id: UUID, extension: str) -> Path:
+        normalized = extension.lstrip(".")
+        return self._cache_dir / f"{track_id}.{normalized}"
+
     def ensure_cache_dir(self) -> None:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 

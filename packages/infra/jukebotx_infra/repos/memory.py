@@ -55,6 +55,10 @@ class InMemoryTrackRepository(TrackRepository):
                 opus_path=data.opus_path or existing.opus_path,
                 opus_status=data.opus_status or existing.opus_status,
                 opus_transcoded_at=data.opus_transcoded_at or existing.opus_transcoded_at,
+                web_audio_url=data.web_audio_url or existing.web_audio_url,
+                web_audio_path=data.web_audio_path or existing.web_audio_path,
+                web_audio_status=data.web_audio_status or existing.web_audio_status,
+                web_audio_transcoded_at=data.web_audio_transcoded_at or existing.web_audio_transcoded_at,
                 updated_at=now,
             )
             self._by_id[existing.id] = updated
@@ -77,6 +81,10 @@ class InMemoryTrackRepository(TrackRepository):
             opus_transcoded_at=data.opus_transcoded_at,
             created_at=now,
             updated_at=now,
+            web_audio_url=data.web_audio_url,
+            web_audio_path=data.web_audio_path,
+            web_audio_status=data.web_audio_status,
+            web_audio_transcoded_at=data.web_audio_transcoded_at,
         )
         self._by_id[track_id] = track
         self._by_url[data.suno_url] = track_id
@@ -98,6 +106,27 @@ class InMemoryTrackRepository(TrackRepository):
             opus_path=opus_path,
             opus_status=opus_status,
             opus_transcoded_at=opus_transcoded_at,
+            updated_at=_now(),
+        )
+        self._by_id[track_id] = updated
+        return updated
+
+    async def update_web_audio_metadata(
+        self,
+        *,
+        track_id: UUID,
+        web_audio_url: str | None,
+        web_audio_path: str | None,
+        web_audio_status: str | None,
+        web_audio_transcoded_at: datetime | None,
+    ) -> Track:
+        track = await self.get_by_id(track_id)
+        updated = replace(
+            track,
+            web_audio_url=web_audio_url,
+            web_audio_path=web_audio_path,
+            web_audio_status=web_audio_status,
+            web_audio_transcoded_at=web_audio_transcoded_at,
             updated_at=_now(),
         )
         self._by_id[track_id] = updated

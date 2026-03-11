@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from jukebotx_infra.db.models import Base
@@ -21,6 +22,13 @@ async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 logger = logging.getLogger(__name__)
 
+_ADDITIVE_SCHEMA_UPDATES = (
+    "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS web_audio_url VARCHAR(1024)",
+    "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS web_audio_path VARCHAR(1024)",
+    "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS web_audio_status VARCHAR(32)",
+    "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS web_audio_transcoded_at TIMESTAMPTZ",
+)
+
 
 async def init_db() -> None:
     """Create database tables based on SQLAlchemy metadata."""
@@ -31,6 +39,8 @@ async def init_db() -> None:
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                for statement in _ADDITIVE_SCHEMA_UPDATES:
+                    await conn.execute(text(statement))
             return
         except Exception as exc:
             if attempt >= max_attempts:

@@ -29,7 +29,17 @@ class OpusTranscoder:
             output_tmp_path = tmp_path / "output.opus"
 
             self._download_mp3(mp3_url, mp3_path)
-            self._run_ffmpeg(mp3_path, output_tmp_path)
+            self._run_ffmpeg(mp3_path, output_tmp_path, output_format="opus")
+            shutil.move(str(output_tmp_path), output_path)
+
+    def transcode_web_audio(self, *, mp3_url: str, output_path: Path) -> None:
+        with tempfile.TemporaryDirectory(prefix="jukebotx-web-audio-") as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            mp3_path = tmp_path / "input.mp3"
+            output_tmp_path = tmp_path / "output.ogg"
+
+            self._download_mp3(mp3_url, mp3_path)
+            self._run_ffmpeg(mp3_path, output_tmp_path, output_format="ogg")
             shutil.move(str(output_tmp_path), output_path)
 
     def _download_mp3(self, url: str, destination: Path) -> None:
@@ -42,7 +52,7 @@ class OpusTranscoder:
         except Exception as exc:
             raise OpusTranscodeError(f"Failed to download MP3 from {url}") from exc
 
-    def _run_ffmpeg(self, mp3_path: Path, output_path: Path) -> None:
+    def _run_ffmpeg(self, mp3_path: Path, output_path: Path, *, output_format: str) -> None:
         command = [
             self._ffmpeg_path,
             "-y",
@@ -53,7 +63,7 @@ class OpusTranscoder:
             "-b:a",
             "128k",
             "-f",
-            "opus",
+            output_format,
             str(output_path),
         ]
         logger.info("Transcoding MP3 to Opus: %s", " ".join(command))

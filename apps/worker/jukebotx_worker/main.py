@@ -40,54 +40,61 @@ async def _process_job(
         return False
 
     output_path = cache.cache_path(track_id=job.track_id)
+    web_audio_output_path = cache.cache_path_with_extension(track_id=job.track_id, extension="ogg")
+    opus_url: str | None = None
+    opus_path: str | None = None
+    web_audio_url: str | None = None
+    web_audio_path: str | None = None
+    has_fresh_opus = False
+    has_fresh_web_audio = False
+
     if storage.is_enabled:
         object_key = storage.object_key(track_id=job.track_id)
-        if storage.is_fresh(object_key=object_key):
-            logger.info("Opus storage already fresh for track %s", job.track_id)
-            await job_repo.mark_completed(job_id=job.id)
-            await track_repo.update_opus_metadata(
-                track_id=job.track_id,
-                opus_url=storage.public_url(object_key=object_key),
-                opus_path=object_key,
-                opus_status="completed",
-                opus_transcoded_at=_now(),
-            )
-            return True
+        web_audio_object_key = storage.object_key_for_extension(
+            track_id=job.track_id,
+            extension="ogg",
+            suffix="web",
+        )
+        has_fresh_opus = storage.is_fresh(object_key=object_key)
+        has_fresh_web_audio = storage.is_fresh(object_key=web_audio_object_key)
+        opus_url = storage.public_url(object_key=object_key)
+        opus_path = object_key
+        web_audio_url = storage.public_url(object_key=web_audio_object_key)
+        web_audio_path = web_audio_object_key
     else:
-        if output_path.exists() and cache.is_fresh(output_path):
-            logger.info("Opus cache already fresh for track %s", job.track_id)
-            await job_repo.mark_completed(job_id=job.id)
-            await track_repo.update_opus_metadata(
-                track_id=job.track_id,
-                opus_url=f"/tracks/{job.track_id}/opus",
-                opus_path=str(output_path),
-                opus_status="completed",
-                opus_transcoded_at=_now(),
-            )
-            return True
+        has_fresh_opus = output_path.exists() and cache.is_fresh(output_path)
+        has_fresh_web_audio = web_audio_output_path.exists() and cache.is_fresh(web_audio_output_path)
+        opus_url = f"/tracks/{job.track_id}/opus"
+        opus_path = str(output_path)
+        web_audio_url = f"/tracks/{job.track_id}/web-audio"
+        web_audio_path = str(web_audio_output_path)
 
-    cache.ensure_cache_dir()
-
-    try:
-        await asyncio.to_thread(transcoder.transcode, mp3_url=job.mp3_url, output_path=output_path)
-    except OpusTranscodeError as exc:
-        logger.error("Opus transcode failed for track %s: %s", job.track_id, exc)
-        await job_repo.mark_failed(job_id=job.id, error=str(exc))
+    if has_fresh_opus and has_fresh_web_audio:
+        logger.info("Audio artifacts already fresh for track %s", job.track_id)
+        await job_repo.mark_completed(job_id=job.id)
         await track_repo.update_opus_metadata(
             track_id=job.track_id,
-            opus_url=None,
-            opus_path=None,
-            opus_status="failed",
+            opus_url=opus_url,
+            opus_path=opus_path,
+            opus_status="completed",
             opus_transcoded_at=_now(),
+        )
+        await track_repo.update_web_audio_metadata(
+            track_id=job.track_id,
+            web_audio_url=web_audio_url,
+            web_audio_path=web_audio_path,
+            web_audio_status="completed",
+            web_audio_transcoded_at=_now(),
         )
         return True
 
-    if storage.is_enabled:
-        object_key = storage.object_key(track_id=job.track_id)
+    cache.ensure_cache_dir()
+
+    if not has_fresh_opus:
         try:
-            storage.upload_file(local_path=output_path, object_key=object_key)
-        except Exception as exc:  # noqa: BLE001 - log and mark failed
-            logger.error("Opus upload failed for track %s: %s", job.track_id, exc)
+            await asyncio.to_thread(transcoder.transcode, mp3_url=job.mp3_url, output_path=output_path)
+        except OpusTranscodeError as exc:
+            logger.error("Opus transcode failed for track %s: %s", job.track_id, exc)
             await job_repo.mark_failed(job_id=job.id, error=str(exc))
             await track_repo.update_opus_metadata(
                 track_id=job.track_id,
@@ -96,32 +103,89 @@ async def _process_job(
                 opus_status="failed",
                 opus_transcoded_at=_now(),
             )
+            await track_repo.update_web_audio_metadata(
+                track_id=job.track_id,
+                web_audio_url=None,
+                web_audio_path=None,
+                web_audio_status="failed",
+                web_audio_transcoded_at=_now(),
+            )
             return True
-        try:
-            output_path.unlink()
-        except FileNotFoundError:
-            pass
-        opus_url = storage.public_url(object_key=object_key)
-        await job_repo.mark_completed(job_id=job.id)
-        await track_repo.update_opus_metadata(
-            track_id=job.track_id,
-            opus_url=opus_url,
-            opus_path=object_key,
-            opus_status="completed",
-            opus_transcoded_at=_now(),
-        )
-        logger.info("Opus transcode uploaded to storage for track %s", job.track_id)
-        return True
 
-    await job_repo.mark_completed(job_id=job.id)
+        if storage.is_enabled:
+            try:
+                storage.upload_file(local_path=output_path, object_key=object_key)
+            except Exception as exc:  # noqa: BLE001 - log and mark failed
+                logger.error("Opus upload failed for track %s: %s", job.track_id, exc)
+                await job_repo.mark_failed(job_id=job.id, error=str(exc))
+                await track_repo.update_opus_metadata(
+                    track_id=job.track_id,
+                    opus_url=None,
+                    opus_path=None,
+                    opus_status="failed",
+                    opus_transcoded_at=_now(),
+                )
+                return True
+            try:
+                output_path.unlink()
+            except FileNotFoundError:
+                pass
+            logger.info("Opus transcode uploaded to storage for track %s", job.track_id)
+        else:
+            logger.info("Opus transcode completed for track %s", job.track_id)
+
     await track_repo.update_opus_metadata(
         track_id=job.track_id,
-        opus_url=f"/tracks/{job.track_id}/opus",
-        opus_path=str(output_path),
+        opus_url=opus_url,
+        opus_path=opus_path,
         opus_status="completed",
         opus_transcoded_at=_now(),
     )
-    logger.info("Opus transcode completed for track %s", job.track_id)
+
+    if has_fresh_web_audio:
+        await track_repo.update_web_audio_metadata(
+            track_id=job.track_id,
+            web_audio_url=web_audio_url,
+            web_audio_path=web_audio_path,
+            web_audio_status="completed",
+            web_audio_transcoded_at=_now(),
+        )
+    else:
+        try:
+            await asyncio.to_thread(
+                transcoder.transcode_web_audio,
+                mp3_url=job.mp3_url,
+                output_path=web_audio_output_path,
+            )
+            if storage.is_enabled:
+                storage.upload_media_file(
+                    local_path=web_audio_output_path,
+                    object_key=web_audio_object_key,
+                    content_type="audio/ogg",
+                )
+                try:
+                    web_audio_output_path.unlink()
+                except FileNotFoundError:
+                    pass
+            await track_repo.update_web_audio_metadata(
+                track_id=job.track_id,
+                web_audio_url=web_audio_url,
+                web_audio_path=web_audio_path,
+                web_audio_status="completed",
+                web_audio_transcoded_at=_now(),
+            )
+            logger.info("Web audio generated for track %s", job.track_id)
+        except Exception as exc:  # noqa: BLE001 - keep opus pipeline resilient
+            logger.warning("Web audio generation failed for track %s: %s", job.track_id, exc)
+            await track_repo.update_web_audio_metadata(
+                track_id=job.track_id,
+                web_audio_url=None,
+                web_audio_path=None,
+                web_audio_status="failed",
+                web_audio_transcoded_at=_now(),
+            )
+
+    await job_repo.mark_completed(job_id=job.id)
     return True
 
 

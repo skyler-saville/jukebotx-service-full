@@ -19,6 +19,10 @@ class TrackSummary(BaseModel):
     opus_path: str | None
     opus_status: str | None
     opus_transcoded_at: datetime | None
+    web_audio_url: str | None
+    web_audio_path: str | None
+    web_audio_status: str | None
+    web_audio_transcoded_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -49,10 +53,18 @@ class SessionTrackResponse(BaseModel):
     title: str | None
     suno_url: str
     mp3_url: str | None
+    web_audio_url: str | None = None
+    web_audio_status: str | None = None
 
 
 
 class OpusStatusResponse(BaseModel):
+    track_id: UUID
+    ready: bool
+    status: str
+
+
+class WebAudioStatusResponse(BaseModel):
     track_id: UUID
     ready: bool
     status: str

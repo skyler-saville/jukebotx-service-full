@@ -31,6 +31,7 @@ from jukebotx_api.schemas import (
     QueuePreviewResponse,
     SessionTrackResponse,
     TrackSummary,
+    WebAudioStatusResponse,
 )
 from jukebotx_infra.opus_cache import OpusCacheService
 from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
@@ -279,6 +280,38 @@ async def get_track_audio(
     return RedirectResponse(url=track.mp3_url)
 
 
+@app.get("/tracks/{track_id}/web-audio", response_model=None)
+async def get_track_web_audio(
+    track_id: UUID,
+    session: SessionData = Depends(require_session),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    opus_cache: OpusCacheService = Depends(get_opus_cache_service),
+    opus_storage: OpusStorageService = Depends(get_opus_storage_service),
+    opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
+):
+    track = await require_track(track_repo, track_id)
+    if track.mp3_url is None:
+        raise HTTPException(status_code=404, detail="Track audio not available.")
+
+    if track.web_audio_status == "completed":
+        if opus_storage.is_enabled:
+            object_key = track.web_audio_path or ""
+            if object_key and opus_storage.is_fresh(object_key=object_key):
+                return RedirectResponse(url=opus_storage.get_access_url(object_key=object_key))
+            if track.web_audio_url:
+                return RedirectResponse(url=track.web_audio_url)
+        else:
+            web_audio_path_value = track.web_audio_path or str(
+                opus_cache.cache_path_with_extension(track_id=track_id, extension="ogg")
+            )
+            web_audio_path = Path(web_audio_path_value)
+            if web_audio_path.exists():
+                return FileResponse(web_audio_path, media_type="audio/ogg", filename=f"{track_id}.ogg")
+
+    await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
+    return RedirectResponse(url=track.mp3_url)
+
+
 @app.get("/tracks/{track_id}/opus", response_model=None)
 async def get_track_opus(
     track_id: UUID,
@@ -337,3 +370,37 @@ async def get_track_opus_status(
 
     job = await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
     return OpusStatusResponse(track_id=track_id, ready=False, status=job.status)
+
+
+@app.get("/tracks/{track_id}/web-audio/status", response_model=WebAudioStatusResponse)
+async def get_track_web_audio_status(
+    track_id: UUID,
+    session: SessionData = Depends(require_session),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    opus_cache: OpusCacheService = Depends(get_opus_cache_service),
+    opus_storage: OpusStorageService = Depends(get_opus_storage_service),
+    opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
+) -> WebAudioStatusResponse:
+    track = await require_track(track_repo, track_id)
+    if track.mp3_url is None:
+        raise HTTPException(status_code=404, detail="Track audio not available.")
+
+    if track.web_audio_status == "completed":
+        if opus_storage.is_enabled:
+            object_key = track.web_audio_path or ""
+            if object_key and opus_storage.is_fresh(object_key=object_key):
+                return WebAudioStatusResponse(track_id=track_id, ready=True, status="ready")
+            if track.web_audio_url:
+                return WebAudioStatusResponse(track_id=track_id, ready=True, status="ready")
+        else:
+            web_audio_path_value = track.web_audio_path or str(
+                opus_cache.cache_path_with_extension(track_id=track_id, extension="ogg")
+            )
+            web_audio_path = Path(web_audio_path_value)
+            if web_audio_path.exists():
+                return WebAudioStatusResponse(track_id=track_id, ready=True, status="ready")
+    if track.web_audio_status == "failed":
+        return WebAudioStatusResponse(track_id=track_id, ready=False, status="failed")
+
+    job = await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
+    return WebAudioStatusResponse(track_id=track_id, ready=False, status=job.status)

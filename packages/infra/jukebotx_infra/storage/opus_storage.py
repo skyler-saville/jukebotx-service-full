@@ -50,8 +50,15 @@ class OpusStorageService:
         return self._config.provider == "s3" and bool(self._config.bucket)
 
     def object_key(self, *, track_id: UUID) -> str:
+        return self.object_key_for_extension(track_id=track_id, extension="opus")
+
+    def object_key_for_extension(self, *, track_id: UUID, extension: str, suffix: str = "") -> str:
         prefix = self._config.prefix.strip("/")
-        filename = f"{track_id}.opus"
+        normalized_extension = extension.lstrip(".")
+        normalized_suffix = suffix.strip("/")
+        if normalized_suffix:
+            prefix = "/".join(part for part in (prefix, normalized_suffix) if part)
+        filename = f"{track_id}.{normalized_extension}"
         if prefix:
             return f"{prefix}/{filename}"
         return filename
