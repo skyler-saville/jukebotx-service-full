@@ -27,6 +27,11 @@ _ADDITIVE_SCHEMA_UPDATES = (
     "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS web_audio_path VARCHAR(1024)",
     "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS web_audio_status VARCHAR(32)",
     "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS web_audio_transcoded_at TIMESTAMPTZ",
+    "ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS current_track_id UUID",
+    "ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS activated_by BIGINT",
+    "ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true",
+    "ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ",
+    "ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ",
 )
 
 

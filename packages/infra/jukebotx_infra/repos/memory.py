@@ -15,6 +15,9 @@ from jukebotx_core.ports.repositories import (
     Track,
     TrackRepository,
     TrackUpsert,
+    WebSession,
+    WebSessionCreate,
+    WebSessionRepository,
 )
 
 
@@ -202,3 +205,66 @@ class InMemoryQueueRepository(QueueRepository):
 
     async def clear(self, *, guild_id: int) -> None:
         self._by_guild[guild_id] = []
+
+
+class InMemoryWebSessionRepository(WebSessionRepository):
+    def __init__(self) -> None:
+        self._by_session_id: dict[UUID, WebSession] = {}
+        self._by_channel: dict[tuple[int, int], UUID] = {}
+
+    async def get_by_session_id(self, *, session_id: UUID) -> WebSession | None:
+        return self._by_session_id.get(session_id)
+
+    async def get_for_channel(self, *, guild_id: int, channel_id: int) -> WebSession | None:
+        session_id = self._by_channel.get((guild_id, channel_id))
+        if session_id is None:
+            return None
+        return self._by_session_id.get(session_id)
+
+    async def activate(self, data: WebSessionCreate) -> WebSession:
+        now = _now()
+        existing = await self.get_for_channel(guild_id=data.guild_id, channel_id=data.channel_id)
+        if existing is None:
+            session = WebSession(
+                id=uuid4(),
+                session_id=uuid4(),
+                guild_id=data.guild_id,
+                channel_id=data.channel_id,
+                current_track_id=data.current_track_id,
+                activated_by=data.activated_by,
+                is_active=True,
+                activated_at=now,
+                ended_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+        else:
+            session = replace(
+                existing,
+                current_track_id=data.current_track_id,
+                activated_by=data.activated_by,
+                is_active=True,
+                activated_at=now,
+                ended_at=None,
+                updated_at=now,
+            )
+        self._by_channel[(data.guild_id, data.channel_id)] = session.session_id
+        self._by_session_id[session.session_id] = session
+        return session
+
+    async def set_current_track(self, *, session_id: UUID, track_id: UUID | None) -> WebSession:
+        existing = await self.get_by_session_id(session_id=session_id)
+        if existing is None:
+            raise KeyError(f"Web session not found: {session_id}")
+        updated = replace(existing, current_track_id=track_id, updated_at=_now())
+        self._by_session_id[session_id] = updated
+        return updated
+
+    async def deactivate(self, *, session_id: UUID) -> WebSession:
+        existing = await self.get_by_session_id(session_id=session_id)
+        if existing is None:
+            raise KeyError(f"Web session not found: {session_id}")
+        now = _now()
+        updated = replace(existing, is_active=False, ended_at=now, updated_at=now)
+        self._by_session_id[session_id] = updated
+        return updated

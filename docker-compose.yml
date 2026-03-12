@@ -19,6 +19,15 @@ services:
     env_file: .env
     ports:
       - "${API_PORT:-8000}:8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=gateway"
+      - "traefik.http.routers.jukebotx-api.rule=Host(`jukebotx-api.cortocast.com`)"
+      - "traefik.http.routers.jukebotx-api.entrypoints=web"
+      - "traefik.http.services.jukebotx-api.loadbalancer.server.port=8000"
+    networks:
+      - default
+      - gateway
     depends_on:
       - db
       - minio
@@ -35,6 +44,15 @@ services:
       dockerfile: apps/web/Dockerfile
     ports:
       - "${WEB_PORT:-3000}:3000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=gateway"
+      - "traefik.http.routers.jukebotx-web.rule=Host(`jukebotx.cortocast.com`)"
+      - "traefik.http.routers.jukebotx-web.entrypoints=web"
+      - "traefik.http.services.jukebotx-web.loadbalancer.server.port=3000"
+    networks:
+      - default
+      - gateway
     depends_on:
       - api
 
@@ -86,3 +104,7 @@ volumes:
   pgdata:
   minio_data:
   lavalink_plugins:
+
+networks:
+  gateway:
+    external: true

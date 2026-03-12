@@ -25,6 +25,7 @@ from jukebotx_api.auth import (
     validate_state_token,
 )
 from jukebotx_api.schemas import (
+    ActivateWebSessionRequest,
     NextQueueItemResponse,
     OpusStatusResponse,
     QueueItemSummary,
@@ -32,17 +33,20 @@ from jukebotx_api.schemas import (
     SessionTrackResponse,
     TrackSummary,
     WebAudioStatusResponse,
+    WebSessionCurrentTrackResponse,
+    WebSessionResponse,
 )
 from jukebotx_infra.opus_cache import OpusCacheService
 from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
 from jukebotx_api.settings import ApiSettings, load_api_settings
-from jukebotx_core.ports.repositories import OpusJobCreate, Track
+from jukebotx_core.ports.repositories import OpusJobCreate, Track, WebSessionCreate
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
-from jukebotx_infra.db import async_session_factory
+from jukebotx_infra.db import async_session_factory, init_db
 from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
 from jukebotx_infra.repos.track_repo import PostgresTrackRepository
+from jukebotx_infra.repos.web_session_repo import PostgresWebSessionRepository
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -50,6 +54,11 @@ app = FastAPI(title="JukeBotx API")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    await init_db()
 
 
 def get_queue_repo() -> PostgresQueueRepository:
@@ -62,6 +71,10 @@ def get_track_repo() -> PostgresTrackRepository:
 
 def get_submission_repo() -> PostgresSubmissionRepository:
     return PostgresSubmissionRepository(async_session_factory)
+
+
+def get_web_session_repo() -> PostgresWebSessionRepository:
+    return PostgresWebSessionRepository(async_session_factory)
 
 
 def get_opus_job_repo() -> PostgresOpusJobRepository:
@@ -101,6 +114,39 @@ async def require_track(track_repo: PostgresTrackRepository, track_id: UUID) -> 
         return await track_repo.get_by_id(track_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _build_web_session_response(
+    *,
+    session_id: UUID,
+    guild_id: int,
+    channel_id: int,
+    is_active: bool,
+    activated_at: datetime | None,
+    ended_at: datetime | None,
+    current_track: Track | None,
+) -> WebSessionResponse:
+    current_track_payload = None
+    if current_track is not None:
+        current_track_payload = WebSessionCurrentTrackResponse(
+            track_id=current_track.id,
+            artist_display=current_track.artist_display,
+            title=current_track.title,
+            suno_url=current_track.suno_url,
+            mp3_url=current_track.mp3_url,
+            web_audio_url=current_track.web_audio_url,
+            web_audio_status=current_track.web_audio_status,
+            image_url=current_track.image_url,
+        )
+    return WebSessionResponse(
+        session_id=session_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        is_active=is_active,
+        activated_at=activated_at,
+        ended_at=ended_at,
+        current_track=current_track_payload,
+    )
 
 
 @app.get("/healthz")
@@ -266,6 +312,64 @@ async def get_track(
 ) -> TrackSummary:
     track = await require_track(track_repo, track_id)
     return TrackSummary.model_validate(track)
+
+
+@app.get("/sessions/{session_id}", response_model=WebSessionResponse)
+async def get_web_session(
+    session_id: UUID,
+    web_session_repo: PostgresWebSessionRepository = Depends(get_web_session_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+) -> WebSessionResponse:
+    session = await web_session_repo.get_by_session_id(session_id=session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Web session not found.")
+    current_track = None
+    if session.current_track_id is not None:
+        try:
+            current_track = await require_track(track_repo, session.current_track_id)
+        except HTTPException:
+            current_track = None
+    return _build_web_session_response(
+        session_id=session.session_id,
+        guild_id=session.guild_id,
+        channel_id=session.channel_id,
+        is_active=session.is_active,
+        activated_at=session.activated_at,
+        ended_at=session.ended_at,
+        current_track=current_track,
+    )
+
+
+@app.post("/guilds/{guild_id}/channels/{channel_id}/web-session", response_model=WebSessionResponse)
+async def activate_web_session(
+    guild_id: int,
+    channel_id: int,
+    payload: ActivateWebSessionRequest,
+    session: SessionData = Depends(require_session),
+    web_session_repo: PostgresWebSessionRepository = Depends(get_web_session_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+) -> WebSessionResponse:
+    ensure_guild_access(session, guild_id)
+    current_track = None
+    if payload.current_track_id is not None:
+        current_track = await require_track(track_repo, payload.current_track_id)
+    web_session = await web_session_repo.activate(
+        WebSessionCreate(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            activated_by=int(session.user_id),
+            current_track_id=payload.current_track_id,
+        )
+    )
+    return _build_web_session_response(
+        session_id=web_session.session_id,
+        guild_id=web_session.guild_id,
+        channel_id=web_session.channel_id,
+        is_active=web_session.is_active,
+        activated_at=web_session.activated_at,
+        ended_at=web_session.ended_at,
+        current_track=current_track,
+    )
 
 
 @app.get("/tracks/{track_id}/audio")

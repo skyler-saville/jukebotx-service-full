@@ -199,6 +199,9 @@ These names may evolve, but the usual suspects are:
 * `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — used by Docker Compose
 * `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI` — OAuth config for the API
 * `API_SESSION_SECRET`, `API_SESSION_TTL_SECONDS` — cookie signing + TTL for OAuth sessions
+* `PUBLIC_API_BASE_URL` — public API origin used by the web shell and shareable links (for this setup: `https://jukebotx-api.cortocast.com`)
+* `PUBLIC_FRONTEND_URL` — public frontend origin (for this setup: `https://cortocast.com` or your chosen web hostname)
+* `WEB_BASE_URL` — session URL base the bot posts into Discord (for this setup: `https://jukebotx.cortocast.com`)
 * `OPUS_CACHE_DIR`, `OPUS_CACHE_TTL_SECONDS` — local Opus cache location + TTL (API)
 * `OPUS_API_BASE_URL` — base URL for the bot to request cached Opus audio (e.g., `http://localhost:8001`)
 * `OPUS_STORAGE_PROVIDER` — set to `s3` to enable object storage for Opus files
@@ -212,6 +215,20 @@ These names may evolve, but the usual suspects are:
 * `MEDIA_GIF_ENABLED` — enable worker MP4-to-GIF backfill for track art previews (defaults to `true`)
 
 > Do not commit `.env`. The repo should ignore it.
+
+### Public routing
+
+This repo no longer runs the Cloudflare tunnel connector directly.
+
+Current split:
+
+* `jukebotx_dev` owns app/runtime config such as `PUBLIC_API_BASE_URL`, `PUBLIC_FRONTEND_URL`, and `WEB_BASE_URL`
+* the reverse proxy repo (`pi_reverse_proxy`) owns `cloudflared`, Traefik, and tunnel credentials
+
+Public hostnames in the current setup:
+
+* Web UI: `https://jukebotx.cortocast.com`
+* API: `https://jukebotx-api.cortocast.com`
 
 ---
 
@@ -282,11 +299,20 @@ unless otherwise noted.
 * `GET /guilds/{guild_id}/queue?limit=10` — queue preview for a guild.
 * `GET /guilds/{guild_id}/queue/next` — next unplayed queue item (if any).
 * `GET /guilds/{guild_id}/channels/{channel_id}/session/tracks` — tracks submitted in a session channel.
+* `POST /guilds/{guild_id}/channels/{channel_id}/web-session` — activate or refresh a persisted public web listening session for a Discord channel.
 * `GET /tracks/{track_id}` — track metadata by ID.
 * `GET /tracks/{track_id}/audio` — redirects to the track MP3 URL (404 if missing).
 * `GET /tracks/{track_id}/opus` — serves cached Opus audio for the track. Cached files are stored at
   `static/opus/{track_id}.opus` for up to `OPUS_CACHE_TTL_SECONDS` seconds before being re-transcoded.
   When `OPUS_STORAGE_PROVIDER=s3`, the API redirects to MinIO/S3 instead.
+* `GET /tracks/{track_id}/web-audio` — serves browser-oriented Ogg/Opus audio (`audio/ogg`) when ready; otherwise enqueues generation and falls back to the source MP3 redirect.
+* `GET /tracks/{track_id}/web-audio/status` — readiness/status for the browser-oriented Ogg/Opus artifact.
+
+### Public web session endpoints
+
+These endpoints are intended for the web listener flow and do not rely on guild-cookie authorization.
+
+* `GET /sessions/{session_id}` — public session lookup by persisted session ID, including current track metadata when a DJ has activated the session.
 
 ### Auth requirements
 
@@ -344,6 +370,7 @@ For role-based controls (admins/mods/DJs), use the `/admin` group:
 ### Web UI
 
 * `;web` / `;sessionurl` — post the session UI link (requires `WEB_BASE_URL`)
+  The intended public listener route is session-based, for example `/listen/{session_id}`.
 
 ### Announcements
 

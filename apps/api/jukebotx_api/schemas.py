@@ -57,6 +57,31 @@ class SessionTrackResponse(BaseModel):
     web_audio_status: str | None = None
 
 
+class WebSessionCurrentTrackResponse(BaseModel):
+    track_id: UUID
+    artist_display: str | None
+    title: str | None
+    suno_url: str
+    mp3_url: str | None
+    web_audio_url: str | None
+    web_audio_status: str | None
+    image_url: str | None
+
+
+class WebSessionResponse(BaseModel):
+    session_id: UUID
+    guild_id: int
+    channel_id: int
+    is_active: bool
+    activated_at: datetime | None
+    ended_at: datetime | None
+    current_track: WebSessionCurrentTrackResponse | None
+
+
+class ActivateWebSessionRequest(BaseModel):
+    current_track_id: UUID | None = None
+
+
 
 class OpusStatusResponse(BaseModel):
     track_id: UUID

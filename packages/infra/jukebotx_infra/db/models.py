@@ -70,6 +70,24 @@ class QueueItemModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class WebSessionModel(Base):
+    """Database model for public web listening sessions."""
+
+    __tablename__ = "web_sessions"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), unique=True, index=True, default=uuid4)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    current_track_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tracks.id"))
+    activated_by: Mapped[int | None] = mapped_column(BigInteger)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True, server_default="true")
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 
 class OpusJobModel(Base):
     """Database model for Opus transcode jobs."""

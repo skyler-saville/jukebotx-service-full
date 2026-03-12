@@ -59,6 +59,21 @@ class SubmissionTrackInfo:
 
 
 @dataclass(frozen=True)
+class WebSession:
+    id: UUID
+    session_id: UUID
+    guild_id: int
+    channel_id: int
+    current_track_id: UUID | None
+    activated_by: int | None
+    is_active: bool
+    activated_at: datetime | None
+    ended_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class QueueItem:
     """
     Guild-scoped queue item; "played" is per guild, not global.
@@ -126,6 +141,14 @@ class OpusJobCreate:
     mp3_url: str
 
 
+@dataclass(frozen=True)
+class WebSessionCreate:
+    guild_id: int
+    channel_id: int
+    activated_by: int | None = None
+    current_track_id: UUID | None = None
+
+
 class TrackRepository:
     async def get_by_suno_url(self, suno_url: str) -> Track | None:
         raise NotImplementedError
@@ -170,6 +193,23 @@ class SubmissionRepository:
         raise NotImplementedError
 
     async def list_for_track(self, *, track_id: UUID) -> list[Submission]:
+        raise NotImplementedError
+
+
+class WebSessionRepository:
+    async def get_by_session_id(self, *, session_id: UUID) -> WebSession | None:
+        raise NotImplementedError
+
+    async def get_for_channel(self, *, guild_id: int, channel_id: int) -> WebSession | None:
+        raise NotImplementedError
+
+    async def activate(self, data: WebSessionCreate) -> WebSession:
+        raise NotImplementedError
+
+    async def set_current_track(self, *, session_id: UUID, track_id: UUID | None) -> WebSession:
+        raise NotImplementedError
+
+    async def deactivate(self, *, session_id: UUID) -> WebSession:
         raise NotImplementedError
 
 
