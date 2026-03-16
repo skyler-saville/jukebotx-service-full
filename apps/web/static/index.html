@@ -151,6 +151,15 @@
         margin-top: 16px;
       }
 
+      .field.inline {
+        grid-template-columns: 1fr auto;
+        align-items: end;
+      }
+
+      .field.inline button {
+        white-space: nowrap;
+      }
+
       input {
         width: 100%;
         padding: 12px 14px;
@@ -165,8 +174,82 @@
         margin-top: 18px;
       }
 
+      .hero p {
+        max-width: 60ch;
+      }
+
+      .session-shell {
+        display: grid;
+        gap: 18px;
+      }
+
+      .session-status {
+        font-size: 14px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      .session-card {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 20px;
+        align-items: start;
+      }
+
+      .session-art {
+        width: 100%;
+        aspect-ratio: 1;
+        object-fit: cover;
+        border-radius: 22px;
+        background: rgba(30, 26, 23, 0.08);
+        border: 1px solid var(--border);
+      }
+
+      .session-meta h3 {
+        margin: 0 0 6px;
+        font-size: 32px;
+      }
+
+      .session-meta p {
+        margin: 0 0 10px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .queue-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .queue-item {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: rgba(30, 26, 23, 0.04);
+      }
+
+      .queue-item strong,
+      .queue-item span {
+        display: block;
+      }
+
+      .queue-item span {
+        color: var(--muted);
+        margin-top: 4px;
+      }
+
+      .hidden {
+        display: none;
+      }
+
       @media (max-width: 760px) {
         .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .session-card {
           grid-template-columns: 1fr;
         }
       }
@@ -175,17 +258,23 @@
   <body>
     <main>
       <section class="hero">
-        <div class="eyebrow">Web Audio Preview</div>
-        <h1>JukeBotx browser playback scaffold</h1>
+        <div class="eyebrow">JukeBotx Web</div>
+        <h1>Discord listening parties, outside Discord</h1>
         <p>
-          This container is a thin web shell in front of the FastAPI service. It proxies
-          <code>/api/*</code> to the internal API container and also exposes the tunnel-backed
-          public base URLs from <code>.env</code> so future frontend code can build shareable links
-          without hardcoding Docker hostnames.
+          Sessions are unlisted and link-driven. A DJ activates the session from Discord, then
+          listeners join through <code>/listen/{session_id}</code> to get the live track, queue,
+          artwork, lyrics, and browser audio stream without needing Discord voice.
         </p>
         <div class="status">
           <span id="health-dot" class="dot"></span>
           <span id="health-text">Checking API health…</span>
+        </div>
+        <div class="field">
+          <span>Session ID</span>
+          <div class="actions" style="margin-top: 0;">
+            <input id="session-id" type="text" placeholder="00000000-0000-0000-0000-000000000000">
+            <button id="open-session-btn" class="primary" type="button">Open session</button>
+          </div>
         </div>
         <div class="actions">
           <button id="health-btn" class="secondary" type="button">Recheck API</button>
@@ -194,31 +283,64 @@
 
       <section class="grid">
         <article class="panel">
-          <h2>Track Probe</h2>
-          <p>Paste a track UUID to probe the new browser-oriented audio endpoint.</p>
-          <label class="field">
-            <span>Track ID</span>
-            <input id="track-id" type="text" placeholder="00000000-0000-0000-0000-000000000000">
-          </label>
-          <div class="actions">
-            <button id="status-btn" class="primary" type="button">Check web-audio status</button>
-            <button id="play-btn" class="secondary" type="button">Load player</button>
+          <h2>Current session</h2>
+          <div id="session-shell" class="session-shell">
+            <p id="session-empty" class="muted">
+              Open a session link or paste a session UUID above to load a listening party.
+            </p>
+            <div id="session-view" class="hidden">
+              <div id="session-status" class="session-status">Waiting for session data…</div>
+              <div class="session-card">
+                <img id="session-art" class="session-art hidden" alt="Current track artwork">
+                <div class="session-meta">
+                  <h3 id="track-title">No active track</h3>
+                  <p id="track-artist" class="muted">Waiting for host</p>
+                  <p id="track-link" class="muted"></p>
+                  <audio id="player" controls preload="none"></audio>
+                </div>
+              </div>
+              <div>
+                <h2>Lyrics</h2>
+                <div id="lyrics-log" class="log">Lyrics will appear here when available.</div>
+              </div>
+            </div>
           </div>
-          <audio id="player" controls preload="none"></audio>
-          <div id="probe-log" class="log">No track probed yet.</div>
+          <div id="session-log" class="log">No session loaded yet.</div>
         </article>
 
         <aside class="panel">
+          <h2>Up next</h2>
+          <p>Queue preview is pulled from the public session snapshot.</p>
+          <div id="queue-list" class="queue-list">
+            <div class="queue-item">
+              <strong>No queued tracks yet.</strong>
+              <span>Once the session is live, upcoming tracks will appear here.</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="grid" style="margin-top: 24px;">
+        <article class="panel">
           <h2>Route shape</h2>
-          <p>The web container expects the API to provide:</p>
-          <pre>/api/tracks/{track_id}/web-audio
-/api/tracks/{track_id}/web-audio/status</pre>
+          <p>The listener-facing web flow now depends on:</p>
+          <pre>/api/sessions/{session_id}
+/api/sessions/{session_id}/audio</pre>
+        </article>
+
+        <aside class="panel">
+          <h2>Runtime config</h2>
           <div id="config-log" class="log">Loading web runtime config…</div>
         </aside>
       </section>
     </main>
 
     <script>
+      const state = {
+        sessionId: null,
+        sessionPoll: null,
+      };
+
       async function fetchJson(url) {
         const response = await fetch(url, { credentials: "include" });
         const text = await response.text();
@@ -229,6 +351,140 @@
           data = { raw: text };
         }
         return { ok: response.ok, status: response.status, data };
+      }
+
+      function parseSessionIdFromPath() {
+        const prefix = "/listen/";
+        if (!window.location.pathname.startsWith(prefix)) {
+          return null;
+        }
+        return window.location.pathname.slice(prefix.length).split("/")[0] || null;
+      }
+
+      function openSession() {
+        const sessionId = document.getElementById("session-id").value.trim();
+        if (!sessionId) {
+          document.getElementById("session-log").textContent = "Enter a session UUID first.";
+          return;
+        }
+        window.location.assign(`/listen/${sessionId}`);
+      }
+
+      function setPlayerSource(session) {
+        const player = document.getElementById("player");
+        if (!session.current_audio_url || !session.current_track) {
+          if (player.dataset.trackId) {
+            player.pause();
+            player.removeAttribute("src");
+            player.load();
+            player.dataset.trackId = "";
+          }
+          return;
+        }
+        const nextTrackId = session.current_track.track_id;
+        if (player.dataset.trackId === nextTrackId) {
+          return;
+        }
+        const sessionAudioPath = session.current_audio_url.startsWith("/api/")
+          ? session.current_audio_url
+          : `/api${session.current_audio_url}`;
+        player.dataset.trackId = nextTrackId;
+        player.src = `${sessionAudioPath}?track=${nextTrackId}`;
+        player.load();
+      }
+
+      function renderQueue(queue) {
+        const queueList = document.getElementById("queue-list");
+        if (!queue.length) {
+          queueList.innerHTML = `
+            <div class="queue-item">
+              <strong>No queued tracks yet.</strong>
+              <span>The DJ has not added any upcoming tracks.</span>
+            </div>
+          `;
+          return;
+        }
+        queueList.innerHTML = queue
+          .map((item) => `
+            <div class="queue-item">
+              <strong>${item.position}. ${item.title || "Untitled track"}</strong>
+              <span>${item.artist_display || item.artist_username || "Unknown artist"}</span>
+            </div>
+          `)
+          .join("");
+      }
+
+      function renderSession(session) {
+        const empty = document.getElementById("session-empty");
+        const view = document.getElementById("session-view");
+        const log = document.getElementById("session-log");
+        const status = document.getElementById("session-status");
+        const title = document.getElementById("track-title");
+        const artist = document.getElementById("track-artist");
+        const link = document.getElementById("track-link");
+        const lyrics = document.getElementById("lyrics-log");
+        const artwork = document.getElementById("session-art");
+
+        empty.classList.add("hidden");
+        view.classList.remove("hidden");
+        status.textContent = `Session ${session.status}`;
+        log.textContent = JSON.stringify(
+          {
+            session_id: session.session_id,
+            status: session.status,
+            current_audio_url: session.current_audio_url,
+            queue_items: session.queue.length,
+          },
+          null,
+          2
+        );
+
+        if (!session.current_track) {
+          title.textContent = "No active track";
+          artist.textContent = session.is_active ? "Waiting for host" : "Session offline";
+          link.textContent = "";
+          lyrics.textContent = "Lyrics will appear here when a track is playing.";
+          artwork.classList.add("hidden");
+          artwork.removeAttribute("src");
+          renderQueue(session.queue);
+          setPlayerSource(session);
+          return;
+        }
+
+        title.textContent = session.current_track.title || "Untitled track";
+        artist.textContent =
+          session.current_track.artist_display ||
+          session.current_track.artist_username ||
+          "Unknown artist";
+        link.innerHTML = `<a href="${session.current_track.suno_url}" target="_blank" rel="noreferrer">Open original track</a>`;
+        lyrics.textContent = session.current_track.lyrics || "Lyrics unavailable for this track.";
+        if (session.current_track.image_url) {
+          artwork.src = session.current_track.image_url;
+          artwork.classList.remove("hidden");
+        } else {
+          artwork.classList.add("hidden");
+          artwork.removeAttribute("src");
+        }
+        renderQueue(session.queue);
+        setPlayerSource(session);
+      }
+
+      async function loadSession() {
+        if (!state.sessionId) {
+          return;
+        }
+        const log = document.getElementById("session-log");
+        log.textContent = "Loading session…";
+        try {
+          const result = await fetchJson(`/api/sessions/${state.sessionId}`);
+          if (!result.ok) {
+            log.textContent = JSON.stringify(result, null, 2);
+            return;
+          }
+          renderSession(result.data);
+        } catch (error) {
+          log.textContent = `Session load failed: ${error}`;
+        }
       }
 
       async function checkHealth() {
@@ -258,37 +514,16 @@
         }
       }
 
-      async function probeStatus() {
-        const trackId = document.getElementById("track-id").value.trim();
-        const log = document.getElementById("probe-log");
-        if (!trackId) {
-          log.textContent = "Enter a track UUID first.";
-          return;
-        }
-        log.textContent = "Checking web-audio status…";
-        try {
-          const result = await fetchJson(`/api/tracks/${trackId}/web-audio/status`);
-          log.textContent = JSON.stringify(result, null, 2);
-        } catch (error) {
-          log.textContent = `Status check failed: ${error}`;
-        }
-      }
-
-      function loadPlayer() {
-        const trackId = document.getElementById("track-id").value.trim();
-        const log = document.getElementById("probe-log");
-        const player = document.getElementById("player");
-        if (!trackId) {
-          log.textContent = "Enter a track UUID first.";
-          return;
-        }
-        player.src = `/api/tracks/${trackId}/web-audio`;
-        log.textContent = `Player source set to /api/tracks/${trackId}/web-audio`;
-      }
-
       document.getElementById("health-btn").addEventListener("click", checkHealth);
-      document.getElementById("status-btn").addEventListener("click", probeStatus);
-      document.getElementById("play-btn").addEventListener("click", loadPlayer);
+      document.getElementById("open-session-btn").addEventListener("click", openSession);
+
+      state.sessionId = parseSessionIdFromPath();
+      if (state.sessionId) {
+        document.getElementById("session-id").value = state.sessionId;
+        loadSession();
+        state.sessionPoll = window.setInterval(loadSession, 10000);
+      }
+
       loadConfig();
       checkHealth();
     </script>

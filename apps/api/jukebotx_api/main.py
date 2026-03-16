@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -34,12 +34,14 @@ from jukebotx_api.schemas import (
     TrackSummary,
     WebAudioStatusResponse,
     WebSessionCurrentTrackResponse,
+    WebSessionQueueItemResponse,
     WebSessionResponse,
 )
 from jukebotx_infra.opus_cache import OpusCacheService
 from jukebotx_infra.storage import OpusStorageConfig, OpusStorageService
 from jukebotx_api.settings import ApiSettings, load_api_settings
-from jukebotx_core.ports.repositories import OpusJobCreate, Track, WebSessionCreate
+from jukebotx_core.ports.repositories import OpusJobCreate, QueueItem, Track, WebSessionCreate
+from jukebotx_core.shared import parse_playlist_archive_download_token
 from jukebotx_core.use_cases.get_queue_preview import GetQueuePreview
 from jukebotx_infra.db import async_session_factory, init_db
 from jukebotx_infra.repos.opus_job_repo import PostgresOpusJobRepository
@@ -54,6 +56,7 @@ app = FastAPI(title="JukeBotx API")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger(__name__)
+SESSION_QUEUE_PREVIEW_LIMIT = 10
 
 
 @app.on_event("startup")
@@ -125,33 +128,159 @@ def _build_web_session_response(
     activated_at: datetime | None,
     ended_at: datetime | None,
     current_track: Track | None,
+    queue_items: list[tuple[QueueItem, Track]],
 ) -> WebSessionResponse:
+    status = "offline"
+    if is_active:
+        status = "live" if current_track is not None else "waiting"
+
     current_track_payload = None
     if current_track is not None:
         current_track_payload = WebSessionCurrentTrackResponse(
             track_id=current_track.id,
             artist_display=current_track.artist_display,
+            artist_username=current_track.artist_username,
             title=current_track.title,
+            lyrics=current_track.lyrics,
             suno_url=current_track.suno_url,
-            mp3_url=current_track.mp3_url,
-            web_audio_url=current_track.web_audio_url,
             web_audio_status=current_track.web_audio_status,
             image_url=current_track.image_url,
+            video_url=current_track.video_url,
         )
+
+    queue_payload = [
+        WebSessionQueueItemResponse(
+            queue_item_id=item.id,
+            position=item.position,
+            track_id=track.id,
+            artist_display=track.artist_display,
+            artist_username=track.artist_username,
+            title=track.title,
+            suno_url=track.suno_url,
+            image_url=track.image_url,
+            web_audio_status=track.web_audio_status,
+        )
+        for item, track in queue_items
+    ]
+
     return WebSessionResponse(
         session_id=session_id,
         guild_id=guild_id,
         channel_id=channel_id,
         is_active=is_active,
+        status=status,
         activated_at=activated_at,
         ended_at=ended_at,
+        current_audio_url=f"/sessions/{session_id}/audio" if current_track is not None else None,
         current_track=current_track_payload,
+        queue=queue_payload,
     )
+
+
+def _iter_storage_body(body):
+    try:
+        while True:
+            chunk = body.read(1024 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+
+
+async def _load_session_queue_preview(
+    *,
+    guild_id: int,
+    current_track_id: UUID | None,
+    queue_repo: PostgresQueueRepository,
+    track_repo: PostgresTrackRepository,
+    limit: int,
+) -> list[tuple[QueueItem, Track]]:
+    queue_items = await queue_repo.preview(guild_id=guild_id, limit=limit)
+    preview: list[tuple[QueueItem, Track]] = []
+    for item in queue_items:
+        if current_track_id is not None and item.track_id == current_track_id:
+            continue
+        try:
+            track = await require_track(track_repo, item.track_id)
+        except HTTPException:
+            continue
+        preview.append((item, track))
+    return preview
+
+
+async def _resolve_track_web_audio_response(
+    *,
+    track: Track,
+    track_id: UUID,
+    opus_cache: OpusCacheService,
+    opus_storage: OpusStorageService,
+    opus_jobs: PostgresOpusJobRepository,
+):
+    if track.mp3_url is None:
+        raise HTTPException(status_code=404, detail="Track audio not available.")
+
+    if track.web_audio_status == "completed":
+        if opus_storage.is_enabled:
+            object_key = track.web_audio_path or ""
+            if object_key and opus_storage.is_fresh(object_key=object_key):
+                return RedirectResponse(url=opus_storage.get_access_url(object_key=object_key))
+            if track.web_audio_url:
+                return RedirectResponse(url=track.web_audio_url)
+        else:
+            web_audio_path_value = track.web_audio_path or str(
+                opus_cache.cache_path_with_extension(track_id=track_id, extension="ogg")
+            )
+            web_audio_path = Path(web_audio_path_value)
+            if web_audio_path.exists():
+                return FileResponse(web_audio_path, media_type="audio/ogg", filename=f"{track_id}.ogg")
+
+    await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
+    return RedirectResponse(url=track.mp3_url)
 
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/downloads/playlists/{token}", response_model=None)
+async def download_playlist_archive(
+    token: str,
+    settings: ApiSettings = Depends(load_api_settings),
+    opus_storage: OpusStorageService = Depends(get_opus_storage_service),
+):
+    if not settings.session_secret:
+        raise HTTPException(status_code=500, detail="Playlist download links are not configured.")
+
+    claims = parse_playlist_archive_download_token(token, settings.session_secret)
+    if claims is None:
+        raise HTTPException(status_code=404, detail="Playlist download not found or expired.")
+
+    if not opus_storage.is_enabled:
+        raise HTTPException(status_code=503, detail="Playlist archive storage is unavailable.")
+    if not opus_storage.is_fresh(object_key=claims.object_key):
+        raise HTTPException(status_code=404, detail="Playlist download not found or expired.")
+
+    try:
+        stored_object = opus_storage.get_object_stream(object_key=claims.object_key)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Playlist download not found or expired.") from exc
+
+    safe_filename = claims.filename.replace('"', "")
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_filename}"',
+    }
+    if stored_object.content_length is not None:
+        headers["Content-Length"] = str(stored_object.content_length)
+
+    return StreamingResponse(
+        _iter_storage_body(stored_object.body),
+        media_type=stored_object.content_type or "application/zip",
+        headers=headers,
+    )
 
 
 @app.get("/")
@@ -317,7 +446,9 @@ async def get_track(
 @app.get("/sessions/{session_id}", response_model=WebSessionResponse)
 async def get_web_session(
     session_id: UUID,
+    queue_limit: int = Query(default=SESSION_QUEUE_PREVIEW_LIMIT, ge=1, le=25),
     web_session_repo: PostgresWebSessionRepository = Depends(get_web_session_repo),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
 ) -> WebSessionResponse:
     session = await web_session_repo.get_by_session_id(session_id=session_id)
@@ -329,6 +460,13 @@ async def get_web_session(
             current_track = await require_track(track_repo, session.current_track_id)
         except HTTPException:
             current_track = None
+    queue_items = await _load_session_queue_preview(
+        guild_id=session.guild_id,
+        current_track_id=current_track.id if current_track is not None else session.current_track_id,
+        queue_repo=queue_repo,
+        track_repo=track_repo,
+        limit=queue_limit,
+    )
     return _build_web_session_response(
         session_id=session.session_id,
         guild_id=session.guild_id,
@@ -337,6 +475,7 @@ async def get_web_session(
         activated_at=session.activated_at,
         ended_at=session.ended_at,
         current_track=current_track,
+        queue_items=queue_items,
     )
 
 
@@ -347,6 +486,7 @@ async def activate_web_session(
     payload: ActivateWebSessionRequest,
     session: SessionData = Depends(require_session),
     web_session_repo: PostgresWebSessionRepository = Depends(get_web_session_repo),
+    queue_repo: PostgresQueueRepository = Depends(get_queue_repo),
     track_repo: PostgresTrackRepository = Depends(get_track_repo),
 ) -> WebSessionResponse:
     ensure_guild_access(session, guild_id)
@@ -361,6 +501,13 @@ async def activate_web_session(
             current_track_id=payload.current_track_id,
         )
     )
+    queue_items = await _load_session_queue_preview(
+        guild_id=web_session.guild_id,
+        current_track_id=current_track.id if current_track is not None else payload.current_track_id,
+        queue_repo=queue_repo,
+        track_repo=track_repo,
+        limit=SESSION_QUEUE_PREVIEW_LIMIT,
+    )
     return _build_web_session_response(
         session_id=web_session.session_id,
         guild_id=web_session.guild_id,
@@ -369,6 +516,33 @@ async def activate_web_session(
         activated_at=web_session.activated_at,
         ended_at=web_session.ended_at,
         current_track=current_track,
+        queue_items=queue_items,
+    )
+
+
+@app.get("/sessions/{session_id}/audio", response_model=None)
+async def get_web_session_audio(
+    session_id: UUID,
+    web_session_repo: PostgresWebSessionRepository = Depends(get_web_session_repo),
+    track_repo: PostgresTrackRepository = Depends(get_track_repo),
+    opus_cache: OpusCacheService = Depends(get_opus_cache_service),
+    opus_storage: OpusStorageService = Depends(get_opus_storage_service),
+    opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
+):
+    session = await web_session_repo.get_by_session_id(session_id=session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Web session not found.")
+    if not session.is_active:
+        raise HTTPException(status_code=409, detail="Web session is not active.")
+    if session.current_track_id is None:
+        raise HTTPException(status_code=404, detail="Web session has no current track.")
+    track = await require_track(track_repo, session.current_track_id)
+    return await _resolve_track_web_audio_response(
+        track=track,
+        track_id=track.id,
+        opus_cache=opus_cache,
+        opus_storage=opus_storage,
+        opus_jobs=opus_jobs,
     )
 
 
@@ -394,26 +568,13 @@ async def get_track_web_audio(
     opus_jobs: PostgresOpusJobRepository = Depends(get_opus_job_repo),
 ):
     track = await require_track(track_repo, track_id)
-    if track.mp3_url is None:
-        raise HTTPException(status_code=404, detail="Track audio not available.")
-
-    if track.web_audio_status == "completed":
-        if opus_storage.is_enabled:
-            object_key = track.web_audio_path or ""
-            if object_key and opus_storage.is_fresh(object_key=object_key):
-                return RedirectResponse(url=opus_storage.get_access_url(object_key=object_key))
-            if track.web_audio_url:
-                return RedirectResponse(url=track.web_audio_url)
-        else:
-            web_audio_path_value = track.web_audio_path or str(
-                opus_cache.cache_path_with_extension(track_id=track_id, extension="ogg")
-            )
-            web_audio_path = Path(web_audio_path_value)
-            if web_audio_path.exists():
-                return FileResponse(web_audio_path, media_type="audio/ogg", filename=f"{track_id}.ogg")
-
-    await opus_jobs.enqueue(data=OpusJobCreate(track_id=track_id, mp3_url=track.mp3_url))
-    return RedirectResponse(url=track.mp3_url)
+    return await _resolve_track_web_audio_response(
+        track=track,
+        track_id=track_id,
+        opus_cache=opus_cache,
+        opus_storage=opus_storage,
+        opus_jobs=opus_jobs,
+    )
 
 
 @app.get("/tracks/{track_id}/opus", response_model=None)

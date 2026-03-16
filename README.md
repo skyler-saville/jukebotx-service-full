@@ -20,6 +20,7 @@ This repo is set up so you can:
 * [Documentation](#documentation)
 * [Local setup](#local-setup)
 * [Environment variables](#environment-variables)
+* [Product model](#product-model)
 * [Run locally](#run-locally)
 
   * [Bot](#bot)
@@ -194,6 +195,7 @@ These names may evolve, but the usual suspects are:
 
 * `DISCORD_TOKEN` — Discord bot token
 * `DISCORD_GUILD_ID` — optional, for dev/testing slash command sync
+* `MASTER_USER_ID` — Discord user ID for the “master” profile; this user bypasses normal mod-role checks and is the only one allowed to use playlist export commands
 * `LOG_LEVEL` — e.g. `INFO`
 * `DATABASE_URL` — async SQLAlchemy DSN (defaults to local Postgres)
 * `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` — used by Docker Compose
@@ -212,6 +214,8 @@ These names may evolve, but the usual suspects are:
 * `OPUS_STORAGE_PUBLIC_BASE_URL` — public base URL for Opus objects (optional)
 * `OPUS_STORAGE_SIGNED_URL_TTL_SECONDS` — TTL for signed URLs
 * `OPUS_STORAGE_TTL_SECONDS` — TTL for objects before refresh
+* `PLAYLIST_ARCHIVE_STORAGE_PREFIX` — bucket prefix for uploaded playlist zip exports (defaults to `downloads/playlists`)
+* `PLAYLIST_DOWNLOAD_LINK_TTL_SECONDS` — how long signed playlist download links stay valid (defaults to `86400`)
 * `MEDIA_GIF_ENABLED` — enable worker MP4-to-GIF backfill for track art previews (defaults to `true`)
 
 > Do not commit `.env`. The repo should ignore it.
@@ -229,6 +233,49 @@ Public hostnames in the current setup:
 
 * Web UI: `https://jukebotx.cortocast.com`
 * API: `https://jukebotx-api.cortocast.com`
+
+---
+
+## Product model
+
+The web experience is **session-first**, not track-first.
+
+### Core session model
+
+* One Discord listening party maps to one persisted app-level `session_id` (UUID).
+* Public listener route is intended to be `/listen/{session_id}`.
+* A Discord DJ/mod must activate the session before the web route is usable.
+* Until activated, the session should be treated as unavailable or waiting for host.
+
+### Listener experience
+
+* The web client should load session state from the persisted `session_id`.
+* A listener session should expose:
+  * current track
+  * queue preview
+  * artwork
+  * metadata
+  * lyrics
+  * playback timing/state
+
+### Visibility and discovery
+
+* Sessions should be treated as `unlisted` by default.
+* The main `jukebotx.cortocast.com` page should not show a global session directory in the initial version.
+* Access should happen through a direct link posted from Discord.
+* If public discovery is added later, it should be an explicit visibility setting, not the default.
+
+### Authentication
+
+* Anonymous users should be able to view and listen to an active unlisted/public session.
+* Discord authentication should be required only for privileged actions such as activating or managing a session.
+* The web listener flow should minimize friction for mobile users coming from Discord.
+
+### Data ownership
+
+* Postgres should hold canonical session and track state.
+* MinIO/object storage should hold media artifacts such as Ogg/Opus audio and GIF artwork.
+* Near-live playback position should be derived from persisted timing fields such as `started_at` and offsets, not by writing position every second.
 
 ---
 
@@ -305,14 +352,15 @@ unless otherwise noted.
 * `GET /tracks/{track_id}/opus` — serves cached Opus audio for the track. Cached files are stored at
   `static/opus/{track_id}.opus` for up to `OPUS_CACHE_TTL_SECONDS` seconds before being re-transcoded.
   When `OPUS_STORAGE_PROVIDER=s3`, the API redirects to MinIO/S3 instead.
-* `GET /tracks/{track_id}/web-audio` — serves browser-oriented Ogg/Opus audio (`audio/ogg`) when ready; otherwise enqueues generation and falls back to the source MP3 redirect.
+* `GET /tracks/{track_id}/web-audio` — authenticated track-level browser audio endpoint. Serves browser-oriented Ogg/Opus audio (`audio/ogg`) when ready; otherwise enqueues generation and falls back to the source MP3 redirect.
 * `GET /tracks/{track_id}/web-audio/status` — readiness/status for the browser-oriented Ogg/Opus artifact.
 
 ### Public web session endpoints
 
 These endpoints are intended for the web listener flow and do not rely on guild-cookie authorization.
 
-* `GET /sessions/{session_id}` — public session lookup by persisted session ID, including current track metadata when a DJ has activated the session.
+* `GET /sessions/{session_id}` — public listener snapshot by persisted session ID, including session status, current track metadata/lyrics, queue preview, and the current session audio path when a DJ has activated the session.
+* `GET /sessions/{session_id}/audio` — public session-scoped browser audio route for the active track. This keeps anonymous listening tied to a live session instead of exposing arbitrary track playback.
 
 ### Auth requirements
 
@@ -331,11 +379,17 @@ The bot supports both:
 * **Prefix commands** with `;`
 * **Slash commands** (`/`) for the same core playback/session flow
 
+### Permissions model
+
+* Regular hosts/mods/admins/DJs can use the normal session and queue controls.
+* The user configured in `MASTER_USER_ID` has full command access and is the only profile allowed to use playlist download/export commands.
+* `;playlist <url>` and `/playlist <url>` are session-building tools: they immediately close submissions, clear the current queue, then fetch and queue the playlist tracks.
+
 ### Voice + queue
 
 * `;join` — join your current voice channel
 * `;leave` — disconnect and reset the session
-* `;playlist <url>` — queue tracks from a Suno playlist URL
+* `;playlist <url>` — start a new playlist session by closing submissions, clearing the queue, and queueing tracks from a Suno playlist URL
 * `;q` — show now playing + next up
 * `;np` — show now playing
 * `;p` — start playback
@@ -347,6 +401,13 @@ The bot supports both:
 Slash equivalents include:
 
 * `/join`, `/leave`, `/queue`, `/nowplaying`, `/play`, `/skip`, `/stop`, `/playlist`
+
+### Master-only playlist export
+
+These commands are reserved for the `MASTER_USER_ID` profile:
+
+* `;playlist-dl <url>` — fetch a Suno playlist and DM a zip of the audio files; if the archive is too large for Discord, the bot uploads it to object storage and DMs a signed API download link instead
+* `/playlist-dl <url>` — slash-command version of the same export flow
 
 ### Admin UX (slash)
 

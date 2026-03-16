@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TrackSummary(BaseModel):
@@ -60,12 +61,25 @@ class SessionTrackResponse(BaseModel):
 class WebSessionCurrentTrackResponse(BaseModel):
     track_id: UUID
     artist_display: str | None
+    artist_username: str | None
     title: str | None
+    lyrics: str | None
     suno_url: str
-    mp3_url: str | None
-    web_audio_url: str | None
     web_audio_status: str | None
     image_url: str | None
+    video_url: str | None
+
+
+class WebSessionQueueItemResponse(BaseModel):
+    queue_item_id: UUID
+    position: int
+    track_id: UUID
+    artist_display: str | None
+    artist_username: str | None
+    title: str | None
+    suno_url: str
+    image_url: str | None
+    web_audio_status: str | None
 
 
 class WebSessionResponse(BaseModel):
@@ -73,9 +87,12 @@ class WebSessionResponse(BaseModel):
     guild_id: int
     channel_id: int
     is_active: bool
+    status: Literal["live", "waiting", "offline"]
     activated_at: datetime | None
     ended_at: datetime | None
+    current_audio_url: str | None = None
     current_track: WebSessionCurrentTrackResponse | None
+    queue: list[WebSessionQueueItemResponse] = Field(default_factory=list)
 
 
 class ActivateWebSessionRequest(BaseModel):

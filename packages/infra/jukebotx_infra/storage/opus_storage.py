@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import logging
+from typing import Any
 from uuid import UUID
 
 import boto3
@@ -23,6 +24,13 @@ class OpusStorageConfig:
     public_base_url: str
     signed_url_ttl_seconds: int
     ttl_seconds: int
+
+
+@dataclass(frozen=True)
+class StorageObjectStream:
+    body: Any
+    content_type: str | None
+    content_length: int | None
 
 
 class OpusStorageService:
@@ -133,6 +141,22 @@ class OpusStorageService:
             if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
                 return
             raise
+
+    def get_object_stream(self, *, object_key: str) -> StorageObjectStream:
+        if self._client is None:
+            raise RuntimeError("Storage client not configured")
+        try:
+            response = self._client.get_object(Bucket=self._config.bucket, Key=object_key)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+                raise KeyError(object_key) from exc
+            raise
+
+        return StorageObjectStream(
+            body=response["Body"],
+            content_type=response.get("ContentType"),
+            content_length=response.get("ContentLength"),
+        )
 
     def is_fresh(self, *, object_key: str) -> bool:
         if self._client is None:

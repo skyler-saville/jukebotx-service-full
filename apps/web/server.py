@@ -7,6 +7,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -19,11 +20,16 @@ class WebHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=directory or str(STATIC_DIR), **kwargs)
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib interface
-        if self.path == "/config.json":
+        request_path = urlsplit(self.path).path
+        if request_path == "/config.json":
             self._serve_config()
             return
-        if self.path.startswith("/api/"):
+        if request_path.startswith("/api/"):
             self._proxy_request()
+            return
+        if request_path == "/listen" or request_path.startswith("/listen/"):
+            self.path = "/index.html"
+            super().do_GET()
             return
         super().do_GET()
 
