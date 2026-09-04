@@ -17,6 +17,7 @@ sys.path.extend(
 )
 
 from jukebotx_relay.engine import RelayEngine, RelaySourceError, SyntheticToneEngine
+from jukebotx_relay.browser_engine import SunoBrowserAudioEngine
 from jukebotx_relay.main import create_app
 from jukebotx_relay.settings import RelaySettings
 
@@ -52,7 +53,7 @@ def _build_app():
 
 
 @pytest.mark.asyncio
-async def test_relay_stream_is_authenticated_and_one_shot() -> None:
+async def test_relay_stream_can_be_reopened_for_lavalink_probe() -> None:
     app = _build_app()
     transport = httpx.ASGITransport(app=app)
     headers = {"Authorization": "Bearer test-token"}
@@ -84,7 +85,8 @@ async def test_relay_stream_is_authenticated_and_one_shot() -> None:
         assert streamed.content == b"OggS-fake-audio"
 
         replayed = await client.get(stream_path)
-        assert replayed.status_code == 410
+        assert replayed.status_code == 200
+        assert replayed.content == b"OggS-fake-audio"
 
         stopped = await client.delete(
             f"/v1/streams/{created.json()['id']}",
@@ -164,3 +166,61 @@ async def test_synthetic_engine_emits_ogg_audio() -> None:
     audio = b"".join(chunks)
     assert len(audio) > 64
     assert audio.startswith(b"OggS")
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://suno.com/song/b64a51c8-e618-4b21-a057-7867e6a98e13",
+        "https://suno.com/s/EyLlqP2PRu4s2ph6",
+        "https://www.suno.com/song/b64a51c8-e618-4b21-a057-7867e6a98e13",
+    ],
+)
+def test_suno_browser_engine_accepts_song_and_share_urls(source_url: str) -> None:
+    engine = SunoBrowserAudioEngine(
+        ffmpeg_path="ffmpeg",
+        chromium_path="chromium",
+        profile_dir=Path("/tmp/test-profile"),
+        pulse_server=object(),  # type: ignore[arg-type]
+    )
+
+    assert engine.supports(source_url)
+    engine.validate_source(source_url)
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "http://suno.com/song/example",
+        "https://evil.example/song/example",
+        "https://suno.com/create",
+    ],
+)
+def test_suno_browser_engine_rejects_non_song_urls(source_url: str) -> None:
+    engine = SunoBrowserAudioEngine(
+        ffmpeg_path="ffmpeg",
+        chromium_path="chromium",
+        profile_dir=Path("/tmp/test-profile"),
+        pulse_server=object(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RelaySourceError):
+        engine.validate_source(source_url)
+
+
+def test_browser_engine_is_registered_only_when_enabled() -> None:
+    disabled = create_app(
+        settings=RelaySettings(
+            RELAY_ENABLE_BROWSER_INPUTS=False,
+            RELAY_ENABLE_SYNTHETIC_INPUTS=False,
+        )
+    )
+    enabled = create_app(
+        settings=RelaySettings(
+            RELAY_ENABLE_BROWSER_INPUTS=True,
+            RELAY_ENABLE_SYNTHETIC_INPUTS=False,
+        )
+    )
+
+    assert disabled.state.relay_manager.engine_names == ()
+    assert enabled.state.relay_manager.engine_names == ("suno-browser",)

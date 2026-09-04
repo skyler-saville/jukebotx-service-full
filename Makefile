@@ -1,5 +1,5 @@
 .PHONY: bot api up up-d build down destroy logs ps restart \
-        db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-suno-pair smoke-lavalink smoke-lavalink-docker smoke-playlist smoke-audio smoke-relay smoke-worker-gif
+        db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-suno-pair smoke-lavalink smoke-lavalink-docker smoke-playlist smoke-audio smoke-relay smoke-browser-relay smoke-worker-gif
 
 .ONESHELL:
 SHELL := /bin/bash
@@ -168,6 +168,16 @@ smoke-relay:
 	poetry run python scripts/smoke_audio_relay.py \
 		--base-url "$${RELAY_SMOKE_BASE_URL:-http://127.0.0.1:18090}" \
 		--token "$${AUDIO_RELAY_TOKEN:-}"
+
+smoke-browser-relay:
+	@if [ -z "$(URL)" ]; then \
+		echo "ERROR: URL must be set"; \
+		exit 1; \
+	fi
+	poetry run python scripts/smoke_audio_relay.py \
+		--base-url "$${RELAY_SMOKE_BASE_URL:-http://127.0.0.1:18090}" \
+		--token "$${AUDIO_RELAY_TOKEN:-}" \
+		--source-url "$(URL)"
 
 smoke-worker-gif:
 	@if [ -z "$(URL)" ] && [ -z "$(SUNO_SMOKE_URL)" ]; then \

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,6 +15,41 @@ class RelaySettings(BaseSettings):
     )
     control_token: str | None = Field(default=None, alias="AUDIO_RELAY_TOKEN")
     ffmpeg_path: str = Field(default="ffmpeg", alias="RELAY_FFMPEG_PATH")
+    enable_browser_inputs: bool = Field(
+        default=False,
+        alias="RELAY_ENABLE_BROWSER_INPUTS",
+    )
+    chromium_path: str = Field(
+        default="/usr/bin/chromium",
+        alias="RELAY_CHROMIUM_PATH",
+    )
+    browser_profile_dir: Path = Field(
+        default=Path("/data/chromium-profile"),
+        alias="RELAY_BROWSER_PROFILE_DIR",
+    )
+    browser_navigation_timeout_seconds: float = Field(
+        default=45.0,
+        gt=0,
+        alias="RELAY_BROWSER_NAVIGATION_TIMEOUT_SECONDS",
+    )
+    browser_playback_timeout_seconds: float = Field(
+        default=45.0,
+        gt=0,
+        alias="RELAY_BROWSER_PLAYBACK_TIMEOUT_SECONDS",
+    )
+    pulse_server: str = Field(
+        default="unix:/tmp/jukebotx-relay-runtime/pulse/native",
+        alias="RELAY_PULSE_SERVER",
+    )
+    pulse_runtime_dir: Path = Field(
+        default=Path("/tmp/jukebotx-relay-runtime"),
+        alias="RELAY_PULSE_RUNTIME_DIR",
+    )
+    pulseaudio_path: str = Field(
+        default="pulseaudio",
+        alias="RELAY_PULSEAUDIO_PATH",
+    )
+    pactl_path: str = Field(default="pactl", alias="RELAY_PACTL_PATH")
     enable_synthetic_inputs: bool = Field(
         default=False,
         alias="RELAY_ENABLE_SYNTHETIC_INPUTS",

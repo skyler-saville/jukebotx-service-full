@@ -92,6 +92,9 @@ services:
       - "127.0.0.1:${RELAY_PORT_HOST:-18090}:8090"
     expose:
       - "8090"
+    shm_size: "512mb"
+    volumes:
+      - relay_browser_data:/data
     restart: unless-stopped
 
   lavalink:
@@ -119,6 +122,7 @@ volumes:
   pgdata:
   minio_data:
   lavalink_plugins:
+  relay_browser_data:
 
 networks:
   gateway:
