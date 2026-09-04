@@ -144,6 +144,9 @@ jukebotx-service-full/
 ├─ docs/
 │  ├─ README.md
 │  ├─ architecture.md
+│  ├─ ddd.md
+│  ├─ media-pipeline.md
+│  ├─ web-listener.md
 │  ├─ voice-lavalink.md
 │  └─ operations.md
 ├─ Makefile
@@ -158,7 +161,10 @@ jukebotx-service-full/
 
 Project docs live in [`docs/`](docs/README.md):
 
-* [`docs/architecture.md`](docs/architecture.md) — system boundaries and runtime wiring
+* [`docs/architecture.md`](docs/architecture.md) — system boundaries, runtime surfaces, and ownership by layer
+* [`docs/ddd.md`](docs/ddd.md) — DDD and clean-architecture guardrails for future changes
+* [`docs/web-listener.md`](docs/web-listener.md) — public listener flow, session model, and auth split
+* [`docs/media-pipeline.md`](docs/media-pipeline.md) — worker/audio artifact pipeline, storage modes, and delivery behavior
 * [`docs/voice-lavalink.md`](docs/voice-lavalink.md) — Lavalink flow, guild/player model, failure modes
 * [`docs/operations.md`](docs/operations.md) — local runbook, smoke tests, logs, incident triage
 
