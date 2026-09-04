@@ -15,6 +15,7 @@ from jukebotx_bot.discord.now_playing import build_now_playing_embed
 from jukebotx_bot.discord.session import SessionState, Track
 from jukebotx_bot.voice.backends.base import PlaybackBackend
 from jukebotx_bot.voice.backends.lavalink import LavalinkPlaybackBackend
+from jukebotx_core.ports.audio_relay import AudioRelayClient, AudioRelayError
 from jukebotx_infra.suno.client import HttpxSunoClient, SunoScrapeError
 
 
@@ -27,12 +28,21 @@ _FFPROBE_PATH = os.getenv("FFPROBE_PATH", "ffprobe")
 
 
 class GuildAudioController:
-    def __init__(self, guild_id: int, session: SessionState, *, backend: PlaybackBackend | None = None) -> None:
+    def __init__(
+        self,
+        guild_id: int,
+        session: SessionState,
+        *,
+        backend: PlaybackBackend | None = None,
+        relay_client: AudioRelayClient | None = None,
+    ) -> None:
         self.guild_id = guild_id
         self.session = session
         self._lock = asyncio.Lock()
         self._backend = backend or LavalinkPlaybackBackend(guild_id)
         self._backend.add_track_end_hook(self._on_track_end)
+        self._relay_client = relay_client
+        self._active_relay_stream_id: str | None = None
         self._current_source: Optional[object] = None
         self._suno_client = HttpxSunoClient()
 
@@ -52,13 +62,15 @@ class GuildAudioController:
                 source = await self._backend.play_track(voice_client, playback_url)
             except ValueError as exc:
                 logger.error("Refusing to play invalid audio URL for guild %s: %s", self.guild_id, exc)
+                await self._release_active_relay()
                 self.session.rollback_started_track(track)
                 return None
             except Exception:
+                await self._release_active_relay()
                 self.session.rollback_started_track(track)
                 raise
             self._current_source = source
-            if track.duration_seconds is None:
+            if track.duration_seconds is None and self._active_relay_stream_id is None:
                 asyncio.create_task(self._backfill_track_duration(track, playback_url))
             return track
 
@@ -70,9 +82,12 @@ class GuildAudioController:
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
         async with self._lock:
-            await self._backend.stop(voice_client)
-            self._current_source = None
-            self.session.stop_playback()
+            try:
+                await self._backend.stop(voice_client)
+            finally:
+                await self._release_active_relay()
+                self._current_source = None
+                self.session.stop_playback()
 
     async def skip(self, voice_client: discord.VoiceClient) -> Track | None:
         await self.stop(voice_client)
@@ -90,8 +105,11 @@ class GuildAudioController:
         async with self._lock:
             if not self._is_current_track_end_event(source, voice_client):
                 return
+            relay_stream_id = self._take_active_relay_stream_id()
             self._current_source = None
             self.session.stop_playback()
+
+        await self._release_relay(relay_stream_id)
 
         self._log_track_end(error)
 
@@ -134,6 +152,9 @@ class GuildAudioController:
     def _extract_track_match_token(source: object) -> str | None:
         if source is None:
             return None
+
+        if isinstance(source, str):
+            return source
 
         if isinstance(source, dict):
             for key in ("identifier", "track", "uri", "url"):
@@ -207,7 +228,7 @@ class GuildAudioController:
 
         url = track.opus_url or track.audio_url
         if not url:
-            raise ValueError("Track is missing an audio URL")
+            return await self._start_relay_stream(track)
         if track.opus_url:
             try:
                 async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -224,6 +245,45 @@ class GuildAudioController:
                 if track.audio_url:
                     return track.audio_url
         return url
+
+    async def _start_relay_stream(self, track: Track) -> str:
+        if self._relay_client is None:
+            raise ValueError("Track has no direct audio URL and the audio relay is not configured")
+        if not track.page_url:
+            raise ValueError("Track has no source page URL for relay playback")
+
+        try:
+            stream = await self._relay_client.start_stream(
+                source_url=track.page_url,
+                consumer_id=f"discord-guild:{self.guild_id}",
+            )
+        except AudioRelayError as exc:
+            raise ValueError("Audio relay could not prepare the track") from exc
+
+        self._active_relay_stream_id = stream.stream_id
+        return stream.stream_url
+
+    async def _release_active_relay(self) -> None:
+        await self._release_relay(self._take_active_relay_stream_id())
+
+    def _take_active_relay_stream_id(self) -> str | None:
+        stream_id = self._active_relay_stream_id
+        self._active_relay_stream_id = None
+        return stream_id
+
+    async def _release_relay(self, stream_id: str | None) -> None:
+        if stream_id is None or self._relay_client is None:
+            return
+
+        try:
+            await self._relay_client.stop_stream(stream_id)
+        except AudioRelayError:
+            logger.warning(
+                "Failed to release audio relay stream %s for guild %s",
+                stream_id,
+                self.guild_id,
+                exc_info=True,
+            )
 
     async def _ensure_track_media(self, track: Track) -> None:
         if track.media_url or not track.page_url:
@@ -295,8 +355,13 @@ class GuildAudioController:
 
 
 class AudioControllerManager:
-    def __init__(self) -> None:
+    def __init__(self, *, relay_client: AudioRelayClient | None = None) -> None:
         self._controllers: dict[int, GuildAudioController] = {}
+        self._relay_client = relay_client
+
+    @property
+    def relay_enabled(self) -> bool:
+        return self._relay_client is not None
 
     def for_guild(self, guild_id: int, session: SessionState) -> GuildAudioController:
         if guild_id not in self._controllers:
@@ -304,6 +369,7 @@ class AudioControllerManager:
                 guild_id,
                 session,
                 backend=self._create_backend(guild_id),
+                relay_client=self._relay_client,
             )
         return self._controllers[guild_id]
 

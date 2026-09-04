@@ -41,6 +41,13 @@ class BotSettings(BaseSettings):
         alias="PLAYLIST_ARCHIVE_STORAGE_PREFIX",
     )
     voice_backend: str = Field(default="lavalink", alias="VOICE_BACKEND")
+    audio_relay_base_url: str | None = Field(default=None, alias="AUDIO_RELAY_BASE_URL")
+    audio_relay_token: str | None = Field(default=None, alias="AUDIO_RELAY_TOKEN")
+    audio_relay_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        alias="AUDIO_RELAY_TIMEOUT_SECONDS",
+    )
 
     opus_storage_provider: str = Field(default="s3", alias="OPUS_STORAGE_PROVIDER")
     opus_storage_bucket: str | None = Field(default=None, alias="OPUS_STORAGE_BUCKET")
@@ -124,6 +131,8 @@ class BotSettings(BaseSettings):
         "opus_storage_public_base_url",
         "lavalink_session_id",
         "lavalink_resume_timeout_seconds",
+        "audio_relay_base_url",
+        "audio_relay_token",
         mode="before",
     )
     @classmethod

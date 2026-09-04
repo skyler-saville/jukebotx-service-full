@@ -37,6 +37,7 @@ from jukebotx_bot.voice.service import JoinResult, VoiceOrchestrationService
 from jukebotx_core.ports.repositories import TrackUpsert
 from jukebotx_core.shared import build_playlist_archive_download_token
 from jukebotx_core.use_cases.ingest_suno_links import IngestSunoLink, IngestSunoLinkInput
+from jukebotx_infra.audio_relay import HttpAudioRelayClient
 from jukebotx_infra.db import async_session_factory, init_db
 from jukebotx_infra.repos.queue_repo import PostgresQueueRepository
 from jukebotx_infra.repos.submission_repo import PostgresSubmissionRepository
@@ -782,14 +783,14 @@ class JukeBot(commands.Bot):
                     print(f"Failed to ingest Suno URL {url}: {exc}")
                     continue
 
-                if not result.mp3_url:
+                if not result.mp3_url and not self.deps.audio_manager.relay_enabled:
                     logging.warning("Skipping Suno URL without mp3_url: %s", url)
                     await message.channel.send(
-                        "I found that Suno track, but Suno did not expose a playable MP3 URL for it, so I couldn't queue it."
+                        "I found that Suno track, but it has no direct playable audio and the audio relay is not configured, so I couldn't queue it."
                     )
                     continue
 
-                opus_url = self._build_opus_url(result.track_id)
+                opus_url = self._build_opus_url(result.track_id) if result.mp3_url else None
 
                 track = Track(
                     audio_url=result.mp3_url,
@@ -803,7 +804,8 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[track.requester_id] = session.per_user_counts.get(track.requester_id, 0) + 1
-                asyncio.create_task(self._prefetch_opus(result.track_id))
+                if result.mp3_url:
+                    asyncio.create_task(self._prefetch_opus(result.track_id))
                 added_any = True
                 if remaining_slots is not None:
                     remaining_slots -= 1
@@ -1157,7 +1159,11 @@ class JukeBot(commands.Bot):
                         page_url = ingest_result.suno_url
                         artist_display = ingest_result.artist_display
                         media_url = ingest_result.media_url
-                        opus_url = self._build_opus_url(ingest_result.track_id)
+                        opus_url = (
+                            self._build_opus_url(ingest_result.track_id)
+                            if ingest_result.mp3_url
+                            else None
+                        )
                         track_id = ingest_result.track_id
 
                 track = Track(
@@ -1172,7 +1178,7 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
-                if track_id is not None:
+                if track_id is not None and audio_url:
                     asyncio.create_task(self._prefetch_opus(track_id))
 
             await interaction.followup.send(
@@ -1768,7 +1774,11 @@ class JukeBot(commands.Bot):
                         page_url = ingest_result.suno_url
                         artist_display = ingest_result.artist_display
                         media_url = ingest_result.media_url
-                        opus_url = self._build_opus_url(ingest_result.track_id)
+                        opus_url = (
+                            self._build_opus_url(ingest_result.track_id)
+                            if ingest_result.mp3_url
+                            else None
+                        )
                         track_id = ingest_result.track_id
 
                 track = Track(
@@ -1783,7 +1793,7 @@ class JukeBot(commands.Bot):
                 )
                 session.queue.append(track)
                 session.per_user_counts[user_id] = session.per_user_counts.get(user_id, 0) + 1
-                if track_id is not None:
+                if track_id is not None and audio_url:
                     asyncio.create_task(self._prefetch_opus(track_id))
 
             await ctx.send(
@@ -2168,7 +2178,14 @@ def build_bot() -> JukeBot:
     intents.message_content = True  # required for prefix commands
 
     session_manager = SessionManager()
-    audio_manager = AudioControllerManager()
+    relay_client = None
+    if settings.audio_relay_base_url:
+        relay_client = HttpAudioRelayClient(
+            base_url=settings.audio_relay_base_url,
+            token=settings.audio_relay_token,
+            timeout_seconds=settings.audio_relay_timeout_seconds,
+        )
+    audio_manager = AudioControllerManager(relay_client=relay_client)
 
     track_repo = PostgresTrackRepository(async_session_factory)
     suno_client = HttpxSunoClient()

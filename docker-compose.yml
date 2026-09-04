@@ -79,6 +79,21 @@ services:
       - minio
       - lavalink
 
+  relay:
+    profiles:
+      - relay
+    environment:
+      PYTHONPATH: /app/apps/relay:/app/packages/core:/app/packages/infra
+    build:
+      context: .
+      dockerfile: apps/relay/Dockerfile
+    env_file: .env
+    ports:
+      - "127.0.0.1:${RELAY_PORT_HOST:-18090}:8090"
+    expose:
+      - "8090"
+    restart: unless-stopped
+
   lavalink:
     image: ghcr.io/lavalink-devs/lavalink:4-alpine
     restart: unless-stopped

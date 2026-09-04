@@ -1,10 +1,10 @@
 .PHONY: bot api up up-d build down destroy logs ps restart \
-        db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-suno-pair smoke-lavalink smoke-lavalink-docker smoke-playlist smoke-audio smoke-worker-gif
+        db-shell db-reset db-backup db-restore fmt lint test smoke-suno smoke-suno-pair smoke-lavalink smoke-lavalink-docker smoke-playlist smoke-audio smoke-relay smoke-worker-gif
 
 .ONESHELL:
 SHELL := /bin/bash
 
-PYTHONPATH := apps/bot:apps/api:packages/core:packages/infra
+PYTHONPATH := apps/bot:apps/api:apps/relay:packages/core:packages/infra
 DC := docker compose
 
 # ---- Load .env into Make ----
@@ -163,6 +163,11 @@ smoke-playlist:
 smoke-audio:
 	PYTHONPATH=apps/bot:apps/api:packages/core:packages/infra \
 	poetry run python scripts/smoke_audio_urls.py
+
+smoke-relay:
+	poetry run python scripts/smoke_audio_relay.py \
+		--base-url "$${RELAY_SMOKE_BASE_URL:-http://127.0.0.1:18090}" \
+		--token "$${AUDIO_RELAY_TOKEN:-}"
 
 smoke-worker-gif:
 	@if [ -z "$(URL)" ] && [ -z "$(SUNO_SMOKE_URL)" ]; then \

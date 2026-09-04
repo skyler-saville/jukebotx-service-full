@@ -7,7 +7,7 @@ import time
 
 @dataclass
 class Track:
-    audio_url: str
+    audio_url: str | None
     opus_url: str | None
     page_url: str | None
     title: str

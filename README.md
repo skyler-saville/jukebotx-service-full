@@ -212,6 +212,9 @@ These names may evolve, but the usual suspects are:
 * `WEB_BASE_URL` — session URL base the bot posts into Discord (for this setup: `https://jukebotx.cortocast.com`)
 * `OPUS_CACHE_DIR`, `OPUS_CACHE_TTL_SECONDS` — local Opus cache location + TTL (API)
 * `OPUS_API_BASE_URL` — base URL for the bot to request cached Opus audio (e.g., `http://localhost:8001`)
+* `AUDIO_RELAY_BASE_URL` — optional internal URL for a live browser-audio relay sidecar
+* `AUDIO_RELAY_TOKEN` — optional bearer token shared with the relay
+* `AUDIO_RELAY_TIMEOUT_SECONDS` — maximum time to wait for a relay stream to become ready (defaults to `30`)
 * `OPUS_STORAGE_PROVIDER` — set to `s3` to enable object storage for Opus files
 * `OPUS_STORAGE_BUCKET` — bucket for Opus files (MinIO/S3)
 * `OPUS_STORAGE_PREFIX` — prefix for Opus objects (defaults to `opus`)
@@ -595,6 +598,11 @@ Use these environment values:
 The default local JVM setting is `_JAVA_OPTIONS=-Xmx1G` (override with `LAVALINK_JAVA_OPTIONS` if needed).
 
 This codebase now runs in Lavalink-only mode; `VOICE_BACKEND` must remain `lavalink`.
+
+Tracks with a direct MP3 continue through the existing cache/Lavalink path. When a
+track has only a source page URL and `AUDIO_RELAY_BASE_URL` is configured, the bot
+asks the relay for a live stream URL and hands that URL to Lavalink. See
+[`docs/audio-relay.md`](docs/audio-relay.md) for the sidecar contract and lifecycle.
 
 ---
 

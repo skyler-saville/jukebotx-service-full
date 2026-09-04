@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 from pathlib import Path
 import sys
 import asyncio
@@ -17,6 +18,7 @@ from jukebotx_bot.discord.audio import AudioControllerManager, GuildAudioControl
 from jukebotx_bot.discord.session import SessionState, Track
 from jukebotx_bot.voice.backends.base import PlaybackBackend, TrackEndHook
 from jukebotx_bot.voice.backends.lavalink import LavalinkPlaybackBackend
+from jukebotx_core.ports.audio_relay import AudioRelayClient, AudioRelayStream
 
 
 class FakeVoiceClient:
@@ -83,6 +85,27 @@ class FakeValueErrorBackend(FakePlaybackBackend):
         raise ValueError("invalid url")
 
 
+class FakeAudioRelayClient(AudioRelayClient):
+    def __init__(self) -> None:
+        self.start_calls: list[tuple[str, str]] = []
+        self.stop_calls: list[str] = []
+
+    async def start_stream(
+        self,
+        *,
+        source_url: str,
+        consumer_id: str,
+    ) -> AudioRelayStream:
+        self.start_calls.append((source_url, consumer_id))
+        return AudioRelayStream(
+            stream_id="relay-1",
+            stream_url="http://relay:8090/v1/streams/relay-1/audio",
+        )
+
+    async def stop_stream(self, stream_id: str) -> None:
+        self.stop_calls.append(stream_id)
+
+
 def _build_track(title: str, requester_id: int, requester_name: str) -> Track:
     return Track(
         audio_url=f"https://example.com/{title}.mp3",
@@ -94,6 +117,12 @@ def _build_track(title: str, requester_id: int, requester_name: str) -> Track:
         requester_id=requester_id,
         requester_name=requester_name,
     )
+
+
+def _build_relay_track(title: str) -> Track:
+    track = _build_track(title, 1, "User")
+    track.audio_url = None
+    return track
 
 
 @pytest.mark.asyncio
@@ -110,6 +139,86 @@ async def test_play_next_starts_track() -> None:
     assert started.title == "track1"
     assert voice_client.playing
     assert len(backend.play_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_play_next_uses_relay_when_direct_audio_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SessionState()
+    track = _build_relay_track("relay-track")
+    session.queue.append(track)
+    backend = FakePlaybackBackend()
+    relay = FakeAudioRelayClient()
+    controller = GuildAudioController(
+        guild_id=123,
+        session=session,
+        backend=backend,
+        relay_client=relay,
+    )
+    voice_client = FakeVoiceClient()
+
+    async def fail_probe(_: str) -> float | None:
+        raise AssertionError("Live relay streams must not be opened by ffprobe")
+
+    monkeypatch.setattr(controller, "_probe_duration_seconds", fail_probe)
+
+    started = await controller.play_next(voice_client)
+
+    assert started is track
+    assert relay.start_calls == [
+        ("https://example.com/song/relay-track", "discord-guild:123")
+    ]
+    assert backend.play_calls == [
+        (voice_client, "http://relay:8090/v1/streams/relay-1/audio")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_track_end_releases_active_relay_stream() -> None:
+    session = SessionState()
+    session.queue.append(_build_relay_track("relay-track"))
+    backend = FakePlaybackBackend()
+    relay = FakeAudioRelayClient()
+    controller = GuildAudioController(
+        guild_id=123,
+        session=session,
+        backend=backend,
+        relay_client=relay,
+    )
+    voice_client = FakeVoiceClient()
+
+    await controller.play_next(voice_client)
+    current_source = controller._current_source
+    assert current_source is not None
+
+    voice_client.playing = False
+    await backend.emit_track_end(voice_client, current_source)
+
+    assert relay.stop_calls == ["relay-1"]
+    assert controller._active_relay_stream_id is None
+
+
+@pytest.mark.asyncio
+async def test_failed_backend_start_releases_relay_and_rolls_back_track() -> None:
+    session = SessionState()
+    track = _build_relay_track("relay-track")
+    session.queue.append(track)
+    backend = FakeValueErrorBackend()
+    relay = FakeAudioRelayClient()
+    controller = GuildAudioController(
+        guild_id=123,
+        session=session,
+        backend=backend,
+        relay_client=relay,
+    )
+
+    started = await controller.play_next(FakeVoiceClient())
+
+    assert started is None
+    assert relay.stop_calls == ["relay-1"]
+    assert session.now_playing is None
+    assert session.queue == [track]
 
 
 @pytest.mark.asyncio
@@ -324,3 +433,8 @@ def test_audio_controller_manager_supports_lavalink_backend_mode() -> None:
     manager = AudioControllerManager()
     controller = manager.for_guild(999, SessionState())
     assert isinstance(controller._backend, LavalinkPlaybackBackend)
+
+
+def test_audio_controller_manager_reports_relay_configuration() -> None:
+    assert AudioControllerManager().relay_enabled is False
+    assert AudioControllerManager(relay_client=FakeAudioRelayClient()).relay_enabled is True
